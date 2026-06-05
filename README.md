@@ -26,7 +26,7 @@ Additionally, the system utilizes Large Language Models (Gemini/GPT) to generate
 
 ## 🛠️ System Architecture
 
-PathoScope AI follows an **nf-core** inspired decoupled architecture:
+
 
 ```mermaid
 graph TD
