@@ -1,0 +1,9 @@
+# Progress Log for PathoScope AI v3.0
+
+- [x] Task 1: Create config.py containing all hardcoded biological constants (MIN_ORF_LENGTH=100, EVALUE=1e-5).
+- [x] Task 2: Build core/input_detector.py to handle file routing based on structural header inspection.
+- [x] Task 3: Build workflow_a/orf_predictor.py using native BioPython translation with to_stop=True.
+- [x] Task 4: Build workflow_c/fastp_runner.py using subprocess wrappers to parse fastp JSON fields cleanly.
+- [x] Task 5: Build workflow_b/ora_engine.py implementing the one-sided Fisher's Exact Test.
+- [x] Task 6: Build pipeline/pipeline_runner.py with integrated output file verification logic.
+- [x] Task 7: Build api/routes.py with asynchronous chunk-streaming file endpoints and SSE progress routing.

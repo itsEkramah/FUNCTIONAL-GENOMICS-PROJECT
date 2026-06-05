@@ -1,260 +1,929 @@
-# PROJECT_RULES.md — GSD Canonical Rules
+Read:
 
-> **Single Source of Truth** for the Get Shit Done methodology.
-> 
-> Model-agnostic. All adapters and extensions reference this file.
+project-docs/PRD.md
+project-docs/TRD.md
+project-docs/APP_FLOW.md
+project-docs/UI_UX_BRIEF.md
+project-docs/BACKEND_SCHEMA.md
+project-docs/IMPLEMENTATION_PLAN.md
+project-docs/GITHUB_REFERENCE.md
+project-docs/BLUEPRINT.md
+project-docs/MASTER_BLUEPRINT.md
 
----
+Create PROJECT_RULES.md.
 
-## Core Protocol
+# PROJECT_RULES.md
 
-**SPEC → PLAN → EXECUTE → VERIFY → COMMIT**
+Version: 1.0
 
-1. **SPEC**: Define requirements in `.gsd/SPEC.md` until status is `FINALIZED`
-2. **PLAN**: Decompose into phases in `.gsd/ROADMAP.md`, then detailed plans
-3. **EXECUTE**: Implement with atomic commits per task
-4. **VERIFY**: Prove completion with empirical evidence
-5. **COMMIT**: One task = one commit, message format: `type(scope): description`
+Authority Level: Highest
 
-**Planning Lock**: No implementation code until SPEC.md contains "Status: FINALIZED".
+Applies To:
 
----
-
-## Proof Requirements
-
-Every change requires verification evidence:
-
-| Change Type | Required Proof |
-|-------------|----------------|
-| API endpoint | curl/HTTP response |
-| UI change | Screenshot |
-| Build/compile | Command output |
-| Test | Test runner output |
-| Config | Verification command |
-
-**Never accept**: "It looks correct", "This should work", "I've done similar before".
-
-**Always require**: Captured output, screenshot, or test result.
+* Antigravity
+* GSD
+* Ralph Loop
+* CodeRabbit
+* Human Developers
+* Future Contributors
 
 ---
 
-## Search-First Discipline
+# PURPOSE
 
-**Before reading any file completely:**
+This document defines mandatory repository rules.
 
-1. **Search first** — Use grep, ripgrep, or IDE search to find relevant snippets
-2. **Evaluate snippets** — Determine if full file read is justified
-3. **Targeted reads** — Only read specific line ranges when needed
+These rules override:
 
-**Benefits:**
-- Reduces context pollution
-- Faster understanding of large codebases
-- Prevents reading irrelevant code
+* Agent assumptions
+* AI-generated suggestions
+* Convenience shortcuts
+* Temporary fixes
 
-**Anti-pattern**: Reading entire files "to understand the context" without searching first.
+Any implementation violating these rules must be rejected.
 
 ---
 
-## Wave Execution
+# SECTION 1 — PROJECT IDENTITY
 
-Plans are grouped into **waves** based on dependencies:
+## Rule 1.1
 
-| Wave | Characteristic | Execution |
-|------|----------------|-----------|
-| 1 | Foundation tasks, no dependencies | Run in parallel |
-| 2 | Depends on Wave 1 | Wait for Wave 1, then parallel |
-| 3 | Depends on Wave 2 | Wait for Wave 2, then parallel |
+PathoScope AI is a Bioinformatics Pipeline Platform.
 
-**Wave Completion Protocol:**
-1. All tasks in wave verified
-2. State snapshot created
-3. Commit all wave work
-4. Update STATE.md with position
+It is NOT:
+
+* an AI chatbot
+* a dashboard project
+* a visualization project
+* an LLM wrapper
 
 ---
 
-## State Snapshots
+## Rule 1.2
 
-At the end of each wave or significant work block, create a state snapshot:
+Biological correctness is the highest priority.
 
-```markdown
-## Wave N Summary
+Priority order:
 
-**Objective:** {what this wave aimed to accomplish}
+1 Biological correctness
 
-**Changes:**
-- {change 1}
-- {change 2}
+2 Reproducibility
 
-**Files Touched:**
-- {file1}
-- {file2}
+3 Pipeline reliability
 
-**Verification:**
-- {command}: {result}
+4 Software quality
 
-**Risks/Debt:**
-- {any concerns}
+5 User experience
 
-**Next Wave TODO:**
-- {item 1}
-- {item 2}
+---
+
+## Rule 1.3
+
+A failed pipeline is preferable to a fake successful pipeline.
+
+---
+
+# SECTION 2 — ARCHITECTURE RULES
+
+## Rule 2.1
+
+Frontend must never perform biological analysis.
+
+Forbidden:
+
+* ORF prediction
+* Translation
+* Annotation
+* DEG calculations
+* Taxonomy assignment
+* AI interpretation
+
+---
+
+## Rule 2.2
+
+Frontend responsibilities only:
+
+* Upload files
+* Trigger workflows
+* Display status
+* Display results
+* Download reports
+
+---
+
+## Rule 2.3
+
+API layer must never contain scientific logic.
+
+API responsibilities:
+
+* validation
+* routing
+* authentication
+* request handling
+
+---
+
+## Rule 2.4
+
+All scientific computation belongs inside:
+
+```text
+backend/core
+backend/services
+backend/pipeline
+```
+
+Only.
+
+---
+
+## Rule 2.5
+
+All workflow execution must pass through:
+
+```text
+pipeline_runner.py
+```
+
+No exceptions.
+
+---
+
+## Rule 2.6
+
+No route may directly execute:
+
+* FastQC
+* fastp
+* DIAMOND
+* HMMER
+* SPAdes
+
+---
+
+# SECTION 3 — PIPELINE RULES
+
+## Rule 3.1
+
+Every pipeline step must follow:
+
+Execute
+
+↓
+
+Validate
+
+↓
+
+Continue
+
+or
+
+Fail
+
+---
+
+## Rule 3.2
+
+Every step must produce a tangible output.
+
+Examples:
+
+FastQC
+
+Produces:
+
+```text
+report.html
+report.zip
 ```
 
 ---
 
-## Model Independence
+DIAMOND
 
-**Absolute Rule**: No rule, workflow, or skill may require a specific model provider.
+Produces:
 
-**Allowed:**
-- Optional adapters with provider-specific enhancements
-- Capability-based recommendations (e.g., "use a reasoning model for planning")
-- Examples mentioning specific models as illustrations
-
-**Forbidden:**
-- Hard dependencies on provider features
-- Breaking behavior when a specific model is unavailable
-- Duplicating canonical rules in adapters
-
-**Adapter Pattern:**
-```
-adapters/
-├── CLAUDE.md    # Optional Claude enhancements
-├── GEMINI.md    # Optional Gemini enhancements
-└── GPT_OSS.md   # Optional GPT/OSS enhancements
-```
-
-Each adapter must begin with:
-> "Everything in this file is optional. For canonical rules, see PROJECT_RULES.md."
-
----
-
-## Commit Conventions
-
-**Format:**
-```
-type(scope): description
-```
-
-**Types:**
-| Type | Usage |
-|------|-------|
-| `feat` | New feature |
-| `fix` | Bug fix |
-| `docs` | Documentation only |
-| `refactor` | Code restructure (no behavior change) |
-| `test` | Adding/updating tests |
-| `chore` | Maintenance, dependencies |
-
-**Rules:**
-- One task = one commit
-- Verify before commit
-- Scope = phase number for phase work (e.g., `feat(phase-1): ...`)
-
----
-
-## Repository Structure
-
-```
-PROJECT_RULES.md          # ← This file (canonical rules)
-GSD-STYLE.md              # Style and conventions
-
-.agent/
-└── workflows/            # Slash commands (/plan, /execute, etc.)
-
-.agents/
-└── skills/               # Agent specializations (Agent Skills standard)
-
-.gemini/                  # Gemini-specific configuration
-.gsd/                     # Project state and artifacts
-├── SPEC.md               # Requirements (must be FINALIZED)
-├── ROADMAP.md            # Phases and progress
-├── STATE.md              # Session memory
-├── templates/            # Document templates
-└── examples/             # Usage examples
-
-adapters/                 # Optional model-specific enhancements
-docs/                     # Operational documentation
-scripts/                  # Utility scripts
+```text
+diamond.tsv
 ```
 
 ---
 
-## Context Management
+No output
 
-**Context Quality Thresholds:**
+↓
 
-| Usage | Quality |
-|-------|---------|
-| 0-30% | **PEAK** — Comprehensive, thorough work |
-| 30-50% | **GOOD** — Solid, confident output |
-| 50-70% | **DEGRADING** — Efficiency mode |
-| 70%+ | **POOR** — Rushed, incomplete |
-
-**Context Hygiene Rules:**
-- Keep plans under 50% context usage
-- Fresh context for each plan execution
-- After 3 debugging failures → state dump → fresh session
-- STATE.md = memory across sessions
+Pipeline fails
 
 ---
 
-## Token Efficiency Rules
+## Rule 3.3
 
-**Goal:** Minimize token consumption while maintaining output quality.
-
-### Loading Rules
-
-| Action | Rule |
-|--------|------|
-| Before reading file | Search first (grep, ripgrep) |
-| File >200 lines | Use outline, not full file |
-| File already understood | Reference summary, don't reload |
-| >5 files needed | Stop, reconsider approach |
-
-### Budget Thresholds
-
-| Usage | Action Required |
-|-------|-----------------|
-| 0-50% | Proceed normally |
-| 50-70% | Switch to outline mode, compress context |
-| 70%+ | State dump required, recommend fresh session |
-
-### Compression Protocol
-
-After understanding a file:
-1. Create summary in STATE.md or task notes
-2. Reference summary instead of re-reading
-3. Only reload specific sections if needed
-
-### Per-Wave Efficiency
-
-- Start each wave with minimal context
-- Load files just-in-time (when task requires)
-- Compress/summarize before moving to next wave
-- Document token usage in state snapshots (optional)
-
-**Anti-patterns:**
-- Loading files "just in case"
-- Re-reading files already understood
-- Full file reads when snippets suffice
-- Ignoring budget warnings
+No workflow may continue after failed validation.
 
 ---
 
-## Quick Reference
+## Rule 3.4
 
-```
-Before coding    → SPEC.md must be FINALIZED
-Before file read → Search first, then targeted read
-After each task  → Commit + update STATE.md
-After each wave  → State snapshot
-After 3 failures → State dump + fresh session
-Before "Done"    → Empirical proof captured
+Pipeline status values are restricted to:
+
+```text
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+CANCELLED
 ```
 
 ---
 
-*GSD Methodology — Model-Agnostic Edition*
-*Reference implementation for multi-LLM environments*
+## Rule 3.5
+
+COMPLETED status may only be assigned when:
+
+All steps succeed
+
+AND
+
+All validations pass
+
+---
+
+# SECTION 4 — BIOLOGICAL RULES
+
+## Rule 4.1
+
+All biological thresholds must originate from:
+
+```text
+backend/config/thresholds.yaml
+```
+
+Never hardcode values elsewhere.
+
+---
+
+## Rule 4.2
+
+Mandatory ORF threshold
+
+```text
+MIN_ORF_LENGTH_BP = 100
+```
+
+---
+
+## Rule 4.3
+
+Mandatory DIAMOND threshold
+
+```text
+EVALUE <= 1e-5
+```
+
+---
+
+## Rule 4.4
+
+Mandatory identity threshold
+
+```text
+IDENTITY >= 30%
+```
+
+---
+
+## Rule 4.5
+
+Mandatory coverage threshold
+
+```text
+COVERAGE >= 50%
+```
+
+---
+
+## Rule 4.6
+
+FASTQ filtering thresholds
+
+```text
+Q20 minimum
+READ LENGTH >= 50 bp
+```
+
+---
+
+## Rule 4.7
+
+DEG thresholds
+
+```text
+LOG2FC >= 1
+
+LOG2FC <= -1
+
+FDR <= 0.05
+```
+
+---
+
+## Rule 4.8
+
+Pathway size limits
+
+```text
+15 <= pathway <= 500 genes
+```
+
+---
+
+# SECTION 5 — FASTA WORKFLOW RULES
+
+## Rule 5.1
+
+Supported formats
+
+```text
+.fasta
+.fa
+.fna
+```
+
+Only.
+
+---
+
+## Rule 5.2
+
+All genomes must undergo:
+
+1 Validation
+
+2 QC
+
+3 ORF detection
+
+4 Translation
+
+5 Annotation
+
+6 Taxonomy
+
+7 Reporting
+
+---
+
+## Rule 5.3
+
+ORF prediction must scan:
+
+```text
++1
++2
++3
+-1
+-2
+-3
+```
+
+All six reading frames.
+
+---
+
+## Rule 5.4
+
+Translation must use Biopython.
+
+No custom codon dictionaries.
+
+---
+
+## Rule 5.5
+
+KeyError('stop') must never terminate execution.
+
+Partial codons must be handled safely.
+
+---
+
+# SECTION 6 — FASTQ WORKFLOW RULES
+
+## Rule 6.1
+
+Supported formats
+
+```text
+.fastq
+.fastq.gz
+.fq
+.fq.gz
+```
+
+---
+
+## Rule 6.2
+
+Raw reads must always pass through:
+
+FastQC
+
+↓
+
+fastp
+
+↓
+
+FastQC
+
+---
+
+## Rule 6.3
+
+No homemade trimming algorithms.
+
+Use fastp.
+
+---
+
+## Rule 6.4
+
+No homemade QC substitutes.
+
+Use FastQC.
+
+---
+
+## Rule 6.5
+
+Streaming support required.
+
+Large files must not be loaded entirely into memory.
+
+---
+
+## Rule 6.6
+
+Compressed FASTQ support required.
+
+---
+
+## Rule 6.7
+
+SPAdes assembly is optional.
+
+---
+
+# SECTION 7 — DEG RULES
+
+## Rule 7.1
+
+Required columns:
+
+```text
+gene_id
+log2FoldChange
+pvalue
+```
+
+---
+
+## Rule 7.2
+
+FDR correction mandatory.
+
+Method:
+
+Benjamini-Hochberg
+
+---
+
+## Rule 7.3
+
+No significance decisions using raw p-values.
+
+---
+
+## Rule 7.4
+
+Volcano plot generation mandatory.
+
+---
+
+# SECTION 8 — PUBMED RULES
+
+## Rule 8.1
+
+PubMed evidence is mandatory.
+
+---
+
+## Rule 8.2
+
+AI interpretation requires:
+
+Computational evidence
+
+AND
+
+Literature evidence
+
+---
+
+## Rule 8.3
+
+PubMed access method:
+
+NCBI E-Utilities
+
+---
+
+## Rule 8.4
+
+Store:
+
+PMID
+
+Title
+
+Abstract
+
+Journal
+
+Year
+
+---
+
+## Rule 8.5
+
+No fabricated citations.
+
+---
+
+## Rule 8.6
+
+No fabricated PMIDs.
+
+---
+
+## Rule 8.7
+
+No fabricated abstracts.
+
+---
+
+## Rule 8.8
+
+If no literature evidence exists:
+
+Return:
+
+```text
+Insufficient evidence for interpretation.
+```
+
+---
+
+# SECTION 9 — AI INTERPRETATION RULES
+
+## Rule 9.1
+
+AI cannot generate biological conclusions without evidence.
+
+---
+
+## Rule 9.2
+
+AI providers:
+
+* Gemini
+* OpenAI
+
+Only.
+
+---
+
+## Rule 9.3
+
+API keys stored only in:
+
+```text
+.env
+```
+
+Variables:
+
+```text
+OPENAI_API_KEY
+
+GEMINI_API_KEY
+```
+
+---
+
+## Rule 9.4
+
+Frontend must never access API keys.
+
+---
+
+## Rule 9.5
+
+AI interpretation format:
+
+1 Findings
+
+2 Literature
+
+3 Analysis
+
+4 Confidence
+
+5 Limitations
+
+---
+
+## Rule 9.6
+
+AI must cite supporting PMIDs.
+
+---
+
+# SECTION 10 — FRONTEND RULES
+
+## Rule 10.1
+
+No fake progress bars.
+
+---
+
+## Rule 10.2
+
+No simulated completion.
+
+---
+
+## Rule 10.3
+
+No hardcoded success messages.
+
+---
+
+## Rule 10.4
+
+Progress must originate from backend state.
+
+---
+
+## Rule 10.5
+
+Frontend polling required.
+
+---
+
+## Rule 10.6
+
+Workflow state must be visible.
+
+---
+
+# SECTION 11 — REPORT RULES
+
+Required outputs:
+
+HTML
+
+JSON
+
+CSV
+
+PDF
+
+---
+
+FASTA workflow additionally:
+
+GFF3
+
+---
+
+Reports must contain:
+
+Inputs
+
+Methods
+
+Parameters
+
+Results
+
+Limitations
+
+---
+
+# SECTION 12 — LOGGING RULES
+
+Every step must log:
+
+Start time
+
+End time
+
+Duration
+
+Status
+
+Output path
+
+Errors
+
+---
+
+Logs must never be deleted automatically.
+
+---
+
+# SECTION 13 — TESTING RULES
+
+Required test types:
+
+Unit
+
+Integration
+
+Workflow
+
+End-to-End
+
+Biological Validation
+
+---
+
+Every bug fix requires a test.
+
+---
+
+No feature is complete without tests.
+
+---
+
+# SECTION 14 — GITHUB EXTRACTION RULES
+
+## Rule 14.1
+
+Reference repositories are learning resources.
+
+Not source code to copy blindly.
+
+---
+
+## Rule 14.2
+
+Allowed extraction:
+
+Architecture patterns
+
+Algorithms
+
+CLI parameters
+
+Workflow structures
+
+Validation logic
+
+---
+
+## Rule 14.3
+
+Forbidden:
+
+Copying entire repositories
+
+Copying UI
+
+Copying workflows unchanged
+
+Copying documentation verbatim
+
+---
+
+# SECTION 15 — ANTIGRAVITY RULES
+
+## Rule 15.1
+
+Never ask Antigravity to build the entire project in one prompt.
+
+---
+
+## Rule 15.2
+
+All work must be phase-based.
+
+---
+
+## Rule 15.3
+
+One workflow at a time.
+
+---
+
+## Rule 15.4
+
+Pipeline architecture before UI.
+
+---
+
+## Rule 15.5
+
+Backend before frontend.
+
+---
+
+## Rule 15.6
+
+Biological validation before AI interpretation.
+
+---
+
+# SECTION 16 — GSD RULES
+
+GSD is mandatory.
+
+Every major feature requires:
+
+Specification
+
+Acceptance criteria
+
+Verification criteria
+
+Dependencies
+
+---
+
+No execution without specification.
+
+---
+
+# SECTION 17 — RALPH LOOP RULES
+
+Tasks must be atomic.
+
+Maximum scope:
+
+One feature per task.
+
+---
+
+No task should require:
+
+More than one subsystem.
+
+---
+
+# SECTION 18 — CODERABBIT RULES
+
+All pull requests require review.
+
+Critical findings must be fixed before merge.
+
+---
+
+# SECTION 19 — COMPLETION CRITERIA
+
+PathoScope AI is complete only when:
+
+✓ FASTA workflow runs on real genomes
+
+✓ FASTQ workflow runs on real reads
+
+✓ DEG workflow runs on real datasets
+
+✓ DIAMOND annotation works
+
+✓ Pfam integration works
+
+✓ KEGG mapping works
+
+✓ PubMed retrieval works
+
+✓ AI interpretation is evidence-based
+
+✓ Reports are reproducible
+
+✓ Frontend reflects real backend status
+
+✓ No simulated execution exists anywhere
+
+---
+
+# FINAL LAW
+
+If biological evidence, software behavior, UI behavior, AI interpretation, or developer convenience conflict:
+
+Biological evidence wins.
+
+Always.

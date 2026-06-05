@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0c1321;
+    color: #dce2f6;
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0c1321;
+}
+::-webkit-scrollbar-thumb {
+  background: #1F2937;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2e3544;
+}
+
+/* custom scrollbar class */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #151b2a;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #424754;
+  border-radius: 2px;
+}
+
+/* Custom Animations */
+@keyframes pulse-ring {
+  0% { transform: scale(.8); opacity: 0.5; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.pulse-active {
+  position: relative;
+}
+.pulse-active::after {
+  content: "";
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  background: inherit;
+  border-radius: inherit;
+  animation: pulse-ring 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Visual layout gradients */
+.hero-gradient {
+  background: radial-gradient(circle at 50% 50%, rgba(173, 198, 255, 0.08) 0%, rgba(12, 19, 33, 0) 70%);
+}
+
+.grid-bg-pattern {
+  background-image: radial-gradient(#424754 1px, transparent 1px);
+  background-size: 24px 24px;
+}

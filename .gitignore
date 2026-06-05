@@ -179,3 +179,36 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# PathoScope AI Specific Ignores
+# Local SQLite Databases
+*.db
+*.db-journal
+*.sqlite3
+backend/pathoscope.db
+backend/test_runner.db
+
+# Pipeline storage runs, outputs, and database references
+storage/
+backend/storage/
+
+# Frontend Node.js and Next.js build caches
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.env.local
+frontend/.env.*.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# AI Agent Metadata and Assistant Ignores
+.agent/
+.gsd/
+.gemini/
+
