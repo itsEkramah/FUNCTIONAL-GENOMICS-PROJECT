@@ -232,10 +232,12 @@ def cache_pubmed_query(db: Session, job_id: str, query_text: str, query_type: st
 
     # 2. Add individual article leaves
     for art in articles:
-        # Check if PMID already exists in DB to prevent unique constraint failures
-        existing = db.query(PubMedArticle).filter(PubMedArticle.pmid == art["pmid"]).first()
-        if existing:
-            # Re-link existing or continue
+        # Check if PMID already exists in this query to prevent duplicate inserts
+        existing_in_query = db.query(PubMedArticle).filter(
+            PubMedArticle.query_id == db_query.id,
+            PubMedArticle.pmid == art["pmid"]
+        ).first()
+        if existing_in_query:
             continue
         
         db_art = PubMedArticle(

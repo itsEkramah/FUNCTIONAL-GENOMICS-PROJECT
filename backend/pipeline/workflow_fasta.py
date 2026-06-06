@@ -430,7 +430,7 @@ def run_pubmed_step(job_dir: str, logger) -> List[Dict[str, Any]]:
     proteins = [h["subject_protein"] for h in hits]
     
     logger.info(f"Querying PubMed evidence articles for '{organism_name}' and matching proteins.")
-    articles = fetch_pubmed_evidence(organism_name, proteins, logger)
+    articles = fetch_pubmed_evidence(organism_name, proteins, logger, job_dir=job_dir)
     
     # Save to file
     pubmed_json_path = os.path.join(job_dir, "pubmed_articles.json")

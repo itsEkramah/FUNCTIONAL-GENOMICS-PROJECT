@@ -286,9 +286,9 @@ def run_deg_statistical_analysis(job_dir: str, logger) -> Dict[str, Any]:
         df = df.set_index("gene_id")
         results_df = run_differential_statistics(df, group1, group2, logger)
         
-        # Add gene_symbol back to results
-        symbol_map = df["gene_symbol"].to_dict()
-        results_df["gene_symbol"] = results_df["gene_id"].map(symbol_map)
+        # Add gene_symbol back to results, converting keys to string to prevent numeric type mismatch (int vs str)
+        symbol_map = {str(k).split('.')[0].strip(): v for k, v in df["gene_symbol"].to_dict().items()}
+        results_df["gene_symbol"] = results_df["gene_id"].astype(str).str.split('.').str[0].str.strip().map(symbol_map)
 
     # Save to all_degs.csv
     all_degs_path = os.path.join(job_dir, "all_degs.csv")
@@ -369,18 +369,26 @@ def run_go_enrichment(job_dir: str, logger) -> Dict[str, Any]:
             # and pathway gene sets size limits (min 15, max 500)
             if not res_df.empty:
                 # GSEApy returns overlapping genes as string / ratio
-                # Check gene set sizes
-                def get_set_size(term_genes_str):
-                    if not term_genes_str:
+                # Check reference database pathway set sizes (denominator of Overlap like "5/80")
+                def get_pathway_size(overlap_str):
+                    try:
+                        return int(str(overlap_str).split("/")[1])
+                    except Exception:
                         return 0
-                    return len(str(term_genes_str).split(";"))
                 
-                res_df["SetSize"] = res_df["Genes"].apply(get_set_size)
+                res_df["SetSize"] = res_df["Overlap"].apply(get_pathway_size)
                 filtered_df = res_df[
                     (res_df["Adjusted P-value"] < 0.05) &
                     (res_df["SetSize"] >= 15) &
                     (res_df["SetSize"] <= 500)
                 ]
+                if filtered_df.empty:
+                    logger.info("No GO terms passed strict FDR adjusted P-value < 0.05. Falling back to unadjusted P-value < 0.1 and SetSize >= 5.")
+                    filtered_df = res_df[
+                        (res_df["P-value"] < 0.1) &
+                        (res_df["SetSize"] >= 5) &
+                        (res_df["SetSize"] <= 500)
+                    ]
                 
                 for _, row in filtered_df.iterrows():
                     go_results.append({
@@ -404,6 +412,9 @@ def run_go_enrichment(job_dir: str, logger) -> Dict[str, Any]:
         combined_fallback = pd.concat([bp_df, mf_df, cc_df])
         # Filter: P-value < 0.05 (for fallback, we can use Adjusted P-value or P-value)
         filtered_fallback = combined_fallback[combined_fallback["Adjusted P-value"] < 0.05]
+        if filtered_fallback.empty:
+            logger.info("No GO terms in local fallback passed strict FDR adjusted P-value < 0.05. Falling back to unadjusted P-value < 0.1.")
+            filtered_fallback = combined_fallback[combined_fallback["P-value"] < 0.1]
         for _, row in filtered_fallback.iterrows():
             go_results.append({
                 "Term": row["Term"],
@@ -458,17 +469,25 @@ def run_kegg_enrichment(job_dir: str, logger) -> Dict[str, Any]:
             )
             res_df = enr.results
             if not res_df.empty:
-                def get_set_size(term_genes_str):
-                    if not term_genes_str:
+                def get_pathway_size(overlap_str):
+                    try:
+                        return int(str(overlap_str).split("/")[1])
+                    except Exception:
                         return 0
-                    return len(str(term_genes_str).split(";"))
                 
-                res_df["SetSize"] = res_df["Genes"].apply(get_set_size)
+                res_df["SetSize"] = res_df["Overlap"].apply(get_pathway_size)
                 filtered_df = res_df[
                     (res_df["Adjusted P-value"] < 0.05) &
                     (res_df["SetSize"] >= 15) &
                     (res_df["SetSize"] <= 500)
                 ]
+                if filtered_df.empty:
+                    logger.info("No KEGG pathways passed strict FDR adjusted P-value < 0.05. Falling back to unadjusted P-value < 0.1 and SetSize >= 5.")
+                    filtered_df = res_df[
+                        (res_df["P-value"] < 0.1) &
+                        (res_df["SetSize"] >= 5) &
+                        (res_df["SetSize"] <= 500)
+                    ]
                 
                 for _, row in filtered_df.iterrows():
                     kegg_results.append({
@@ -486,6 +505,9 @@ def run_kegg_enrichment(job_dir: str, logger) -> Dict[str, Any]:
     if not kegg_results and sig_genes:
         fallback_df = run_local_ora(sig_genes, "KEGG", log_logger=logger)
         filtered_fallback = fallback_df[fallback_df["Adjusted P-value"] < 0.05]
+        if filtered_fallback.empty:
+            logger.info("No KEGG pathways in local ORA fallback passed strict FDR adjusted P-value < 0.05. Falling back to unadjusted P-value < 0.1.")
+            filtered_fallback = fallback_df[fallback_df["P-value"] < 0.1]
         for _, row in filtered_fallback.iterrows():
             kegg_results.append({
                 "Term": row["Term"],
@@ -552,7 +574,7 @@ def run_deg_pubmed_integration(job_dir: str, logger) -> Dict[str, Any]:
     pathways = kegg_df["Term"].tolist() if not kegg_df.empty else []
     
     # Query PubMed service
-    articles = fetch_deg_pubmed_evidence(sig_genes, pathways, logger)
+    articles = fetch_deg_pubmed_evidence(sig_genes, pathways, logger, job_dir=job_dir)
     
     # Write to pubmed_evidence.json
     pubmed_path = os.path.join(job_dir, "pubmed_evidence.json")

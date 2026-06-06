@@ -99,11 +99,11 @@ You must follow these rules:
         try:
             import google.generativeai as genai
             genai.configure(api_key=settings.gemini_api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.0-flash')
             response = model.generate_content(
                 contents=[system_instruction, prompt]
             )
-            parsed = _parse_markdown_response(response.text, "gemini", "gemini-1.5-flash")
+            parsed = _parse_markdown_response(response.text, "gemini", "gemini-2.0-flash")
             _commit_ai_result(job_id, parsed)
             return parsed
         except Exception as gemini_err:
@@ -308,11 +308,11 @@ You must follow these rules:
         try:
             import google.generativeai as genai
             genai.configure(api_key=settings.gemini_api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.0-flash')
             response = model.generate_content(
                 contents=[system_instruction, prompt]
             )
-            parsed = _parse_deg_markdown_response(response.text, "gemini", "gemini-1.5-flash")
+            parsed = _parse_deg_markdown_response(response.text, "gemini", "gemini-2.0-flash")
             _commit_ai_result(job_id, parsed)
             return parsed
         except Exception as gemini_err:

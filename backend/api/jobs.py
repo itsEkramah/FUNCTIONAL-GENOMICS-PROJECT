@@ -101,6 +101,19 @@ async def get_job_results(job_id: str, db: Session = Depends(get_db)):
         "workflow_type": job.workflow_type,
     }
     
+    # Load ORFs from disk if present
+    from backend.config.constants import PROJECT_ROOT
+    import json
+    orfs_path = os.path.join(PROJECT_ROOT, "storage", "jobs", job_id, "orfs.json")
+    if os.path.exists(orfs_path):
+        try:
+            with open(orfs_path, "r", encoding="utf-8") as f:
+                res["orfs"] = json.load(f)
+        except Exception:
+            res["orfs"] = []
+    else:
+        res["orfs"] = []
+    
     if job.fasta_run:
         res["fasta_run"] = {
             "genome_length": job.fasta_run.genome_length,

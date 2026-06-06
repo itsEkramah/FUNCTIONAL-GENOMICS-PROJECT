@@ -32,7 +32,7 @@ export default function LandingPage() {
             PathoScope AI
           </h1>
           <p className="text-lg md:text-xl text-text-muted max-w-2xl mx-auto mb-12 font-medium">
-            Automated Functional Genomics Platform. Accelerated discovery through machine learning assisted pathogen analysis.
+            Automated Viral Functional Genomics Pipeline for Sequence Annotation, Pathway Mapping, and AI-Assisted Biological Interpretation
           </p>
           
           <div className="max-w-md mx-auto">

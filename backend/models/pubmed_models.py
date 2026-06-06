@@ -21,7 +21,7 @@ class PubMedArticle(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     query_id = Column(String, ForeignKey("pubmed_queries.id", ondelete="CASCADE"), nullable=False)
-    pmid = Column(String(50), nullable=False, unique=True)
+    pmid = Column(String(50), nullable=False)
     title = Column(String, nullable=False)
     journal = Column(String, nullable=False)
     publication_year = Column(Integer, nullable=False)

@@ -441,6 +441,52 @@ def fetch_pubmed_evidence_package(
                 total = len(me_art) + len(cl_art) + len(re_art)
                 avg_score = sum(scores) / len(scores) if scores else 0.0
                 
+                # Check if we need to associate this cached query with the current job_id in the DB
+                current_job_id = os.path.basename(job_dir) if job_dir else "E2E-TEST"
+                if current_job_id != "E2E-TEST":
+                    existing_job_query = db.query(PubMedQuery).filter(
+                        PubMedQuery.job_id == current_job_id,
+                        PubMedQuery.query_text == queries["broad"],
+                        PubMedQuery.query_type == "broad"
+                    ).first()
+                    if not existing_job_query:
+                        try:
+                            # Cache under different queries to mirror search strategies for the current job
+                            for q_type, q_text in queries.items():
+                                new_db_query = PubMedQuery(
+                                    job_id=current_job_id,
+                                    query_text=q_text,
+                                    query_type=q_type
+                                )
+                                db.add(new_db_query)
+                                db.commit()
+                                db.refresh(new_db_query)
+                                
+                                # Add corresponding category articles
+                                cat_map = {"mechanistic": me_art, "clinical": cl_art, "review": re_art, "broad": me_art}
+                                target_map = cat_map.get(q_type, me_art)
+                                
+                                for pmid, art_data in target_map.items():
+                                    db_art = PubMedArticle(
+                                        query_id=new_db_query.id,
+                                        pmid=pmid,
+                                        title=art_data["title"],
+                                        journal=art_data["journal"],
+                                        publication_year=art_data["publication_year"],
+                                        authors=art_data["authors"],
+                                        doi=art_data["doi"],
+                                        abstract=art_data["abstract"],
+                                        relevance_score=art_data["relevance_score"],
+                                        publication_type=art_data["publication_type"],
+                                        mesh_terms=art_data["mesh_terms"]
+                                    )
+                                    db.add(db_art)
+                            db.commit()
+                            if log_logger:
+                                log_logger.info(f"Associated cached PubMed results with active job_id: {current_job_id}")
+                        except Exception as cache_assoc_err:
+                            logger.warning(f"Failed to associate cached NCBI results with job {current_job_id}: {str(cache_assoc_err)}")
+                
                 return {
                     "target_biomolecule": biomolecule,
                     "pubmed_search_strategy": {
@@ -573,8 +619,11 @@ def fetch_pubmed_evidence_package(
                     target_map = cat_map.get(q_type, me_art)
                     
                     for pmid, art in target_map.items():
-                        existing = db.query(PubMedArticle).filter(PubMedArticle.pmid == pmid).first()
-                        if not existing:
+                        existing_in_query = db.query(PubMedArticle).filter(
+                            PubMedArticle.query_id == db_query.id,
+                            PubMedArticle.pmid == pmid
+                        ).first()
+                        if not existing_in_query:
                             db_art = PubMedArticle(
                                 query_id=db_query.id,
                                 pmid=pmid,
@@ -701,7 +750,7 @@ def export_pubmed_evidence(package: Dict[str, Any], output_dir: str, log_logger=
 # LEGACY WRAPPERS TO PREVENT BREAKING INTEGRATIONS
 # =============================================================================
 
-def fetch_pubmed_evidence(organism_name: str, proteins: List[str], log_logger) -> List[Dict[str, Any]]:
+def fetch_pubmed_evidence(organism_name: str, proteins: List[str], log_logger, job_dir: str = "") -> List[Dict[str, Any]]:
     """
     Legacy wrapper matching old FASTA/FASTQ signature. Routes queries through the new engine.
     """
@@ -712,6 +761,7 @@ def fetch_pubmed_evidence(organism_name: str, proteins: List[str], log_logger) -
         biomolecule=biomolecule,
         biomolecule_type="Virus",
         context=context,
+        job_dir=job_dir,
         log_logger=log_logger
     )
     
@@ -723,7 +773,7 @@ def fetch_pubmed_evidence(organism_name: str, proteins: List[str], log_logger) -
             articles.append(art)
     return articles
 
-def fetch_deg_pubmed_evidence(significant_genes: List[str], enriched_pathways: List[str], log_logger) -> List[Dict[str, Any]]:
+def fetch_deg_pubmed_evidence(significant_genes: List[str], enriched_pathways: List[str], log_logger, job_dir: str = "") -> List[Dict[str, Any]]:
     """
     Legacy wrapper matching old DEG signature. Routes queries through the new engine.
     """
@@ -733,6 +783,7 @@ def fetch_deg_pubmed_evidence(significant_genes: List[str], enriched_pathways: L
         biomolecule=biomolecule,
         biomolecule_type="Gene",
         context=context,
+        job_dir=job_dir,
         log_logger=log_logger
     )
     

@@ -120,6 +120,7 @@ export interface PipelineResults {
   deg_run?: DegRun;
   annotations?: AnnotationResult[];
   pfam_domains?: PfamDomain[];
+  orfs?: any[];
   kegg_results?: KeggPathway[];
   taxonomy_results?: TaxonomyResults;
   pubmed?: PubMedArticle[];

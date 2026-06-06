@@ -121,16 +121,14 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
           AI Pathobiology
         </button>
 
-        {results.pubmed && results.pubmed.length > 0 && (
-          <button
-            onClick={() => setActiveTab('pubmed_lit')}
-            className={`px-4 py-2 rounded text-xs font-semibold uppercase tracking-wider transition-colors ${
-              activeTab === 'pubmed_lit' ? 'bg-[#3B82F6]' : 'hover:bg-[#172033]'
-            }`}
-          >
-            PubMed Literature
-          </button>
-        )}
+        <button
+          onClick={() => setActiveTab('pubmed_lit')}
+          className={`px-4 py-2 rounded text-xs font-semibold uppercase tracking-wider transition-colors ${
+            activeTab === 'pubmed_lit' ? 'bg-[#3B82F6]' : 'hover:bg-[#172033]'
+          }`}
+        >
+          PubMed Literature
+        </button>
 
         <button
           onClick={() => setActiveTab('downloads')}
@@ -227,7 +225,11 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
         )}
 
         {activeTab === 'orfs' && results.pfam_domains && (
-          <DomainViewer domains={results.pfam_domains} />
+          <DomainViewer 
+            domains={results.pfam_domains} 
+            annotations={results.annotations || []}
+            orfs={results.orfs || []}
+          />
         )}
 
         {activeTab === 'annotations' && results.annotations && (
@@ -321,10 +323,10 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
         )}
 
         {activeTab === 'ai' && results.ai_interpretation && (
-          <AIReport ai={results.ai_interpretation} pubmed={results.pubmed || []} />
+          <AIReport ai={results.ai_interpretation} />
         )}
 
-        {activeTab === 'pubmed_lit' && results.pubmed && (
+        {activeTab === 'pubmed_lit' && (
           <div className="flex flex-col gap-4">
             <div className="border-b border-[#1F2937] pb-2">
               <h4 className="text-sm font-bold text-[#60A5FA] font-mono">Retrieved PubMed Literature Evidence</h4>
@@ -333,63 +335,67 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
               </p>
             </div>
             
-            <div className="grid grid-cols-1 gap-4">
-              {results.pubmed.map((art) => (
-                <div key={art.pmid} className="bg-[#0B1220] border border-[#1F2937] p-5 rounded-lg flex flex-col gap-3">
-                  <div className="flex justify-between items-start gap-2">
-                    <span className="text-[10px] font-mono text-[#06B6D4] bg-[#111827] px-2.5 py-0.5 rounded border border-[#1F2937]">
-                      PMID: {art.pmid}
-                    </span>
-                    {art.publication_type && (
-                      <span className="text-[9px] uppercase font-mono px-2 py-0.5 bg-[#3B82F6]/10 text-[#60A5FA] border border-[#3B82F6]/30 rounded">
-                        {art.publication_type}
+            {results.pubmed && results.pubmed.length > 0 ? (
+              <div className="grid grid-cols-1 gap-4">
+                {results.pubmed.map((art) => (
+                  <div key={art.pmid} className="bg-[#0B1220] border border-[#1F2937] p-5 rounded-lg flex flex-col gap-3">
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="text-[10px] font-mono text-[#06B6D4] bg-[#111827] px-2.5 py-0.5 rounded border border-[#1F2937]">
+                        PMID: {art.pmid}
                       </span>
-                    )}
-                  </div>
-                  
-                  <h4 className="text-sm font-bold leading-snug">{art.title}</h4>
-                  
-                  <p className="text-[10px] text-gray-400 font-mono">
-                    {art.journal} ({art.publication_year}) | {art.authors.map(a => `${a.forename || ''} ${a.lastname || ''}`).join(', ')}
-                  </p>
-                  
-                  <div className="text-xs leading-relaxed text-gray-300 bg-[#111827] p-3 rounded border border-[#1F2937] whitespace-pre-wrap">
-                    {art.abstract}
-                  </div>
-
-                  {art.mesh_terms && art.mesh_terms.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-1">
-                      {art.mesh_terms.map(tag => (
-                        <span key={tag} className="text-[9px] font-mono px-2 py-0.5 rounded bg-[#111827] border border-gray-700 text-gray-300">
-                          {tag}
+                      {art.publication_type && (
+                        <span className="text-[9px] uppercase font-mono px-2 py-0.5 bg-[#3B82F6]/10 text-[#60A5FA] border border-[#3B82F6]/30 rounded">
+                          {art.publication_type}
                         </span>
-                      ))}
+                      )}
                     </div>
-                  )}
+                    
+                    <h4 className="text-sm font-bold leading-snug">{art.title}</h4>
+                    
+                    <p className="text-[10px] text-gray-400 font-mono">
+                      {art.journal} ({art.publication_year}) | {art.authors.map(a => `${a.forename || ''} ${a.lastname || ''}`).join(', ')}
+                    </p>
+                    
+                    <div className="text-xs leading-relaxed text-gray-300 bg-[#111827] p-3 rounded border border-[#1F2937] whitespace-pre-wrap">
+                      {art.abstract}
+                    </div>
 
-                  <div className="flex gap-3 mt-2 pt-2 border-t border-[#111827]">
-                    <a
-                      href={`https://pubmed.ncbi.nlm.nih.gov/${art.pmid}/`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="bg-[#3B82F6] hover:bg-blue-600 text-white text-xs font-semibold py-1.5 px-4 rounded transition-colors flex items-center justify-center select-none"
-                    >
-                      View PubMed Article ↗
-                    </a>
-                    {art.doi && (
+                    {art.mesh_terms && art.mesh_terms.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1">
+                        {art.mesh_terms.map(tag => (
+                          <span key={tag} className="text-[9px] font-mono px-2 py-0.5 rounded bg-[#111827] border border-gray-700 text-gray-300">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex gap-3 mt-2 pt-2 border-t border-[#111827]">
                       <a
-                        href={`https://doi.org/${art.doi}`}
+                        href={`https://pubmed.ncbi.nlm.nih.gov/${art.pmid}/`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="bg-[#172033] hover:bg-[#1F2937] border border-[#1F2937] text-white text-xs font-semibold py-1.5 px-4 rounded transition-colors flex items-center justify-center select-none"
+                        className="bg-[#3B82F6] hover:bg-blue-600 text-white text-xs font-semibold py-1.5 px-4 rounded transition-colors flex items-center justify-center select-none"
                       >
-                        Publisher DOI ↗
+                        View PubMed Article ↗
                       </a>
-                    )}
+                      {art.doi && (
+                        <a
+                          href={`https://doi.org/${art.doi}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="bg-[#172033] hover:bg-[#1F2937] border border-[#1F2937] text-white text-xs font-semibold py-1.5 px-4 rounded transition-colors flex items-center justify-center select-none"
+                        >
+                          Publisher DOI ↗
+                        </a>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-500 italic text-xs">No PubMed literature evidence retrieved or cached for this analysis.</p>
+            )}
           </div>
         )}
 
@@ -435,8 +441,16 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
                           </td>
                           <td className="px-4 py-2 text-gray-300 font-medium">{kegg.pathway_name}</td>
                           <td className="px-4 py-2 font-mono">{kegg.gene_count}</td>
-                          <td className="px-4 py-2 font-mono">{kegg.pvalue.toExponential(2)}</td>
-                          <td className="px-4 py-2 font-mono">{kegg.fdr.toExponential(2)}</td>
+                          <td className="px-4 py-2 font-mono">
+                            {kegg.pvalue !== undefined && kegg.pvalue !== null && !isNaN(Number(kegg.pvalue)) 
+                              ? Number(kegg.pvalue).toExponential(2) 
+                              : 'N/A'}
+                          </td>
+                          <td className="px-4 py-2 font-mono">
+                            {kegg.fdr !== undefined && kegg.fdr !== null && !isNaN(Number(kegg.fdr)) 
+                              ? Number(kegg.fdr).toExponential(2) 
+                              : 'N/A'}
+                          </td>
                           <td className="px-4 py-2 text-right">
                             <a 
                               href={url} 
