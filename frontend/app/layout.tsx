@@ -9,6 +9,7 @@ import { usePathname } from 'next/navigation';
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isLanding = pathname === '/';
+  const isFullscreen = pathname?.startsWith('/workspace/results');
 
   return (
     <html lang="en" className="dark">
@@ -17,10 +18,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
       </head>
       <body className="bg-[#0c1321] text-[#dce2f6] min-h-screen flex flex-col font-sans antialiased selection:bg-[#3B82F6]/30 overflow-x-hidden">
-        <Navbar />
+        {!isFullscreen && <Navbar />}
         <div className="flex flex-1 relative">
-          {!isLanding && <Sidebar />}
-          <main className={`flex-1 flex flex-col ${isLanding ? 'ml-0' : 'ml-64'}`}>
+          {!isLanding && !isFullscreen && <Sidebar />}
+          <main className={`flex-1 flex flex-col ${isLanding || isFullscreen ? 'ml-0' : 'ml-64'}`}>
             {children}
           </main>
         </div>

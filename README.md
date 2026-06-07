@@ -110,8 +110,8 @@ diamond --version
     ```
 4.  Configure the environment variables by creating a `.env` file:
     ```env
-    OPENAI_API_KEY=your_openai_api_key_here
-    GEMINI_API_KEY=your_google_gemini_api_key_here
+    OPENAI_API_KEY=
+    GEMINI_API_KEY=
     DATABASE_URL=sqlite:///./pathoscope.db
     REDIS_URL=redis://localhost:6379/0
     LOG_LEVEL=INFO

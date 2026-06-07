@@ -1,6 +1,7 @@
 import os
 import csv
 import json
+import re
 import time
 import requests
 import xml.etree.ElementTree as ET
@@ -14,16 +15,95 @@ from backend.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # =============================================================================
+# KNOWN PATHOGEN FAMILY MAPPING (for broadening searches)
+# =============================================================================
+
+_PATHOGEN_FAMILY_MAP = {
+    "poxvirus": ["Poxviridae", "poxvirus", "vaccinia virus", "smallpox"],
+    "coronavirus": ["Coronaviridae", "coronavirus", "SARS-CoV-2", "COVID-19"],
+    "influenza": ["Orthomyxoviridae", "influenza virus", "H1N1", "flu"],
+    "hiv": ["Retroviridae", "HIV", "human immunodeficiency virus", "AIDS"],
+    "hepatitis": ["Hepadnaviridae", "hepatitis B virus", "HBV", "liver disease"],
+    "herpes": ["Herpesviridae", "herpes simplex virus", "HSV"],
+    "ebola": ["Filoviridae", "Ebola virus", "hemorrhagic fever"],
+    "dengue": ["Flaviviridae", "dengue virus", "DENV"],
+    "zika": ["Flaviviridae", "Zika virus", "ZIKV"],
+    "rabies": ["Rhabdoviridae", "rabies virus", "lyssavirus"],
+    "measles": ["Paramyxoviridae", "measles virus", "morbillivirus"],
+    "adenovirus": ["Adenoviridae", "adenovirus", "gene therapy vector"],
+    "papilloma": ["Papillomaviridae", "HPV", "human papillomavirus"],
+    "rotavirus": ["Reoviridae", "rotavirus", "gastroenteritis"],
+}
+
+
+def _extract_searchable_name(raw_name: str) -> str:
+    """
+    Extracts a clean, PubMed-searchable name from a potentially synthetic organism name.
+    e.g. 'Poxvirus rattus41634 Pox41634' -> 'Poxvirus'
+         'Severe acute respiratory syndrome coronavirus 2 Wuhan-Hu-1' -> 'Severe acute respiratory syndrome coronavirus 2'
+    """
+    name = raw_name.strip()
+    # Remove tokens that are purely numeric or contain numeric IDs (like 'rattus41634', 'Pox41634')
+    tokens = name.split()
+    cleaned = []
+    for token in tokens:
+        # Skip tokens that are mostly digits or contain digit-heavy patterns
+        stripped = re.sub(r'[^a-zA-Z]', '', token)
+        digits = re.sub(r'[^0-9]', '', token)
+        if len(digits) > 3 and len(stripped) < 4:
+            continue  # Skip things like '41634', 'Pox41634'
+        if re.match(r'^[A-Za-z]+\d{3,}$', token):
+            continue  # Skip things like 'rattus41634'
+        if re.match(r'^\d+$', token):
+            continue  # Skip pure numbers
+        # Skip lab-code-like tokens (single uppercase + digits)
+        if re.match(r'^[A-Z][a-z]?\d+$', token):
+            continue
+        cleaned.append(token)
+    
+    result = " ".join(cleaned).strip()
+    # If we've stripped everything away, fall back to the first word
+    if not result and tokens:
+        result = tokens[0]
+    return result
+
+
+def _get_broader_search_terms(name: str) -> List[str]:
+    """
+    Given a cleaned organism name, find broader taxonomic search terms.
+    Returns a list of alternative search terms to try.
+    """
+    name_lower = name.lower()
+    broader = []
+    
+    for key, family_terms in _PATHOGEN_FAMILY_MAP.items():
+        if key in name_lower:
+            broader.extend(family_terms)
+            break
+    
+    # If no family match, try the first word as a genus-level search
+    first_word = name.split()[0] if name.split() else name
+    if first_word and first_word not in broader:
+        broader.append(first_word)
+    
+    return broader
+
+
+# =============================================================================
 # INTELLIGENT QUERY GENERATION
 # =============================================================================
 
 def generate_pubmed_queries(biomolecule: str, biomolecule_type: str, context: str) -> Dict[str, str]:
     """
     Generates intelligent Broad, Clinical, Mechanistic, and Review queries for PubMed search.
+    Automatically cleans synthetic organism names to produce valid PubMed queries.
     """
-    b_name = biomolecule.strip()
+    # Clean the biomolecule name to remove synthetic IDs
+    b_name = _extract_searchable_name(biomolecule)
     b_type = biomolecule_type.strip()
     ctx = context.strip() if context else ""
+    
+    logger.info(f"PubMed query generation: raw='{biomolecule}' -> cleaned='{b_name}'")
     
     # 1. Broad Search Query
     if ctx:
@@ -324,8 +404,9 @@ def generate_offline_package(biomolecule: str, queries: Dict[str, str]) -> Dict[
     """
     Generates high-relevance simulated literature package when offline or NCBI services fail.
     """
+    import copy
     b_upper = biomolecule.strip().upper()
-    data = OFFLINE_EVIDENCE_DATABASE.get(b_upper, OFFLINE_EVIDENCE_DATABASE["DEFAULT"])
+    data = copy.deepcopy(OFFLINE_EVIDENCE_DATABASE.get(b_upper, OFFLINE_EVIDENCE_DATABASE["DEFAULT"]))
     
     # Customize the fallback titles and abstracts if default is used
     if b_upper not in OFFLINE_EVIDENCE_DATABASE:
@@ -521,9 +602,41 @@ def fetch_pubmed_evidence_package(
         # Gather all pmids
         all_pmids = list(set(mech_pmids + clin_pmids + rev_pmids))
         
+        # === CASCADING BROADER SEARCH if initial queries returned nothing ===
         if not all_pmids:
             if log_logger:
-                log_logger.info("No matching papers retrieved from ESearch. Triggering offline fallback.")
+                log_logger.info(f"No results for cleaned name. Trying broader taxonomic family terms.")
+            
+            # Try broader search terms from the pathogen family map
+            cleaned_name = _extract_searchable_name(biomolecule)
+            broader_terms = _get_broader_search_terms(cleaned_name)
+            
+            for alt_term in broader_terms:
+                if log_logger:
+                    log_logger.info(f"Broadening search to: '{alt_term}'")
+                # Generate simpler queries with the broader term
+                broad_q = f'"{alt_term}"[Title/Abstract] AND (pathogenesis[Title/Abstract] OR genome[Title/Abstract] OR infection[Title/Abstract])'
+                clin_q = f'"{alt_term}"[Title/Abstract] AND (clinical[Title/Abstract] OR treatment[Title/Abstract] OR therapy[Title/Abstract])'
+                rev_q = f'"{alt_term}"[Title/Abstract] AND (review[Publication Type])'
+                
+                mech_pmids = ncbi_esearch(broad_q, retmax=5)
+                clin_pmids = ncbi_esearch(clin_q, retmax=3)
+                rev_pmids = ncbi_esearch(rev_q, retmax=3)
+                all_pmids = list(set(mech_pmids + clin_pmids + rev_pmids))
+                
+                if all_pmids:
+                    if log_logger:
+                        log_logger.info(f"Found {len(all_pmids)} articles using broader term '{alt_term}'")
+                    # Update queries dict so the cached strategy reflects what actually worked
+                    queries["broad"] = broad_q
+                    queries["clinical"] = clin_q
+                    queries["review"] = rev_q
+                    queries["mechanistic"] = broad_q
+                    break
+        
+        if not all_pmids:
+            if log_logger:
+                log_logger.info("No matching papers retrieved from ESearch after broadening. Triggering offline fallback.")
             return generate_offline_package(biomolecule, queries)
             
         # 2. EFetch detailed XML
@@ -753,43 +866,112 @@ def export_pubmed_evidence(package: Dict[str, Any], output_dir: str, log_logger=
 def fetch_pubmed_evidence(organism_name: str, proteins: List[str], log_logger, job_dir: str = "") -> List[Dict[str, Any]]:
     """
     Legacy wrapper matching old FASTA/FASTQ signature. Routes queries through the new engine.
+    Always returns at least simulated articles if real PubMed fails.
     """
     biomolecule = organism_name
-    # Merge proteins to form context
     context = " OR ".join(proteins[:3]) if proteins else ""
-    pkg = fetch_pubmed_evidence_package(
-        biomolecule=biomolecule,
-        biomolecule_type="Virus",
-        context=context,
-        job_dir=job_dir,
-        log_logger=log_logger
-    )
     
-    # Flatten package to standard old articles list
+    try:
+        pkg = fetch_pubmed_evidence_package(
+            biomolecule=biomolecule,
+            biomolecule_type="Virus",
+            context=context,
+            job_dir=job_dir,
+            log_logger=log_logger
+        )
+        
+        # Flatten package to standard old articles list
+        articles = []
+        req = pkg.get("curated_literature_requirements", {})
+        for cat in ["mechanistic_articles", "clinical_and_therapeutic_articles", "latest_trends_and_reviews"]:
+            cat_data = req.get(cat, {})
+            if isinstance(cat_data, dict):
+                for pmid, art in cat_data.items():
+                    articles.append(art)
+            elif isinstance(cat_data, list):
+                articles.extend(cat_data)
+        
+        if articles:
+            if log_logger:
+                log_logger.info(f"PubMed evidence retrieved: {len(articles)} articles.")
+            return articles
+    except Exception as pkg_err:
+        if log_logger:
+            log_logger.warning(f"PubMed evidence package failed: {str(pkg_err)[:200]}. Using offline fallback.")
+    
+    # Fallback: generate offline articles directly
+    if log_logger:
+        log_logger.info("Generating offline simulated PubMed literature as fallback.")
+    
+    cleaned = _extract_searchable_name(organism_name)
+    queries = generate_pubmed_queries(cleaned, "Virus", context)
+    offline_pkg = generate_offline_package(cleaned, queries)
     articles = []
-    req = pkg["curated_literature_requirements"]
+    req = offline_pkg.get("curated_literature_requirements", {})
     for cat in ["mechanistic_articles", "clinical_and_therapeutic_articles", "latest_trends_and_reviews"]:
-        for pmid, art in req[cat].items():
-            articles.append(art)
+        cat_data = req.get(cat, {})
+        if isinstance(cat_data, dict):
+            for pmid, art in cat_data.items():
+                articles.append(art)
+        elif isinstance(cat_data, list):
+            articles.extend(cat_data)
+    
+    if log_logger:
+        log_logger.info(f"Offline PubMed fallback produced {len(articles)} simulated articles.")
     return articles
 
 def fetch_deg_pubmed_evidence(significant_genes: List[str], enriched_pathways: List[str], log_logger, job_dir: str = "") -> List[Dict[str, Any]]:
     """
     Legacy wrapper matching old DEG signature. Routes queries through the new engine.
+    Always returns at least simulated articles if real PubMed fails or returns nothing.
     """
     biomolecule = significant_genes[0] if significant_genes else "transcriptome"
     context = " OR ".join(enriched_pathways[:2]) if enriched_pathways else ""
-    pkg = fetch_pubmed_evidence_package(
-        biomolecule=biomolecule,
-        biomolecule_type="Gene",
-        context=context,
-        job_dir=job_dir,
-        log_logger=log_logger
-    )
     
+    try:
+        pkg = fetch_pubmed_evidence_package(
+            biomolecule=biomolecule,
+            biomolecule_type="Gene",
+            context=context,
+            job_dir=job_dir,
+            log_logger=log_logger
+        )
+        
+        articles = []
+        req = pkg.get("curated_literature_requirements", {})
+        for cat in ["mechanistic_articles", "clinical_and_therapeutic_articles", "latest_trends_and_reviews"]:
+            cat_data = req.get(cat, {})
+            if isinstance(cat_data, dict):
+                for pmid, art in cat_data.items():
+                    articles.append(art)
+            elif isinstance(cat_data, list):
+                articles.extend(cat_data)
+                
+        if articles:
+            if log_logger:
+                log_logger.info(f"PubMed evidence retrieved for DEG: {len(articles)} articles.")
+            return articles
+    except Exception as pkg_err:
+        if log_logger:
+            log_logger.warning(f"PubMed evidence package failed for DEG: {str(pkg_err)[:200]}. Using offline fallback.")
+            
+    # Fallback: generate offline articles directly
+    if log_logger:
+        log_logger.info("Generating offline simulated PubMed literature for DEG as fallback.")
+        
+    cleaned = _extract_searchable_name(biomolecule)
+    queries = generate_pubmed_queries(cleaned, "Gene", context)
+    offline_pkg = generate_offline_package(cleaned, queries)
     articles = []
-    req = pkg["curated_literature_requirements"]
+    req = offline_pkg.get("curated_literature_requirements", {})
     for cat in ["mechanistic_articles", "clinical_and_therapeutic_articles", "latest_trends_and_reviews"]:
-        for pmid, art in req[cat].items():
-            articles.append(art)
+        cat_data = req.get(cat, {})
+        if isinstance(cat_data, dict):
+            for pmid, art in cat_data.items():
+                articles.append(art)
+        elif isinstance(cat_data, list):
+            articles.extend(cat_data)
+            
+    if log_logger:
+        log_logger.info(f"Offline PubMed fallback for DEG produced {len(articles)} simulated articles.")
     return articles

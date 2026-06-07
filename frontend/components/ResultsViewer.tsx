@@ -13,6 +13,9 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
   const [activeTab, setActiveTab] = useState('overview');
   const [selectedGene, setSelectedGene] = useState<any>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [searchFilter, setSearchFilter] = useState('');
+  const [sortField, setSortField] = useState<'identity' | 'evalue' | 'bitscore'>('identity');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   const workflow = results.workflow_type;
 
@@ -232,44 +235,288 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
           />
         )}
 
-        {activeTab === 'annotations' && results.annotations && (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-[#1F2937] text-sm">
-              <thead className="bg-[#0B1220]">
-                <tr>
-                  <th className="px-4 py-2 text-left text-xs font-mono text-[#9CA3AF]">Query</th>
-                  <th className="px-4 py-2 text-left text-xs font-mono text-[#9CA3AF]">SwissProt Hit</th>
-                  <th className="px-4 py-2 text-left text-xs font-mono text-[#9CA3AF]">Identity %</th>
-                  <th className="px-4 py-2 text-left text-xs font-mono text-[#9CA3AF]">E-Value</th>
-                  <th className="px-4 py-2 text-left text-xs font-mono text-[#9CA3AF]">Annotation</th>
-                  <th className="px-4 py-2 text-right text-xs font-mono text-[#9CA3AF]">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#1F2937]">
-                {results.annotations.map((ann, idx) => {
-                  const rawRow = `Query: ${ann.query_protein} | Subject: ${ann.subject_protein} | Identity: ${ann.identity_percent}% | E-value: ${ann.evalue} | Annotation: ${ann.annotation}`;
-                  return (
-                    <tr key={idx} className="hover:bg-[#172033]">
-                      <td className="px-4 py-2 font-mono font-bold text-[#60A5FA]">{ann.query_protein}</td>
-                      <td className="px-4 py-2 font-mono">{ann.subject_protein}</td>
-                      <td className="px-4 py-2 font-mono">{ann.identity_percent}%</td>
-                      <td className="px-4 py-2 font-mono">{ann.evalue.toExponential(2)}</td>
-                      <td className="px-4 py-2 text-gray-300">{ann.annotation}</td>
-                      <td className="px-4 py-2 text-right">
-                        <button
-                          onClick={() => copyAnnotationRow(rawRow, idx)}
-                          className="text-[#60A5FA] hover:text-[#3B82F6] text-xs font-mono select-none"
-                        >
-                          {copiedIndex === idx ? '✓ Copied' : 'Copy'}
-                        </button>
-                      </td>
+        {activeTab === 'annotations' && results.annotations && (() => {
+          const anns = results.annotations;
+
+          // --- Computed stats ---
+          const totalHits = anns.length;
+          const uniqueTargets = [...new Set(anns.map(a => a.subject_protein))];
+          const avgIdentity = anns.length > 0 ? anns.reduce((s, a) => s + a.identity_percent, 0) / anns.length : 0;
+          const bestHit = anns.length > 0 ? anns.reduce((best, a) => a.identity_percent > best.identity_percent ? a : best, anns[0]) : null;
+          const highConfCount = anns.filter(a => a.identity_percent >= 60).length;
+          const medConfCount = anns.filter(a => a.identity_percent >= 30 && a.identity_percent < 60).length;
+          const lowConfCount = anns.filter(a => a.identity_percent < 30).length;
+
+          // --- Protein distribution (top 6 targets by frequency) ---
+          const targetFreq: Record<string, number> = {};
+          anns.forEach(a => { targetFreq[a.subject_protein] = (targetFreq[a.subject_protein] || 0) + 1; });
+          const topTargets = Object.entries(targetFreq).sort((a, b) => b[1] - a[1]).slice(0, 6);
+          const maxFreq = topTargets.length > 0 ? topTargets[0][1] : 1;
+
+          // --- Filtered & sorted annotations ---
+          const filtered = anns.filter(a =>
+            !searchFilter ||
+            a.query_protein.toLowerCase().includes(searchFilter.toLowerCase()) ||
+            a.subject_protein.toLowerCase().includes(searchFilter.toLowerCase()) ||
+            a.annotation.toLowerCase().includes(searchFilter.toLowerCase())
+          );
+          const sorted = [...filtered].sort((a, b) => {
+            let va: number, vb: number;
+            if (sortField === 'identity') { va = a.identity_percent; vb = b.identity_percent; }
+            else if (sortField === 'evalue') { va = a.evalue; vb = b.evalue; }
+            else { va = a.bitscore; vb = b.bitscore; }
+            return sortDir === 'desc' ? vb - va : va - vb;
+          });
+
+          // --- Helpers ---
+          const identityColor = (pct: number) => pct >= 60 ? '#22C55E' : pct >= 30 ? '#EAB308' : '#EF4444';
+          const identityLabel = (pct: number) => pct >= 60 ? 'High' : pct >= 30 ? 'Moderate' : 'Low';
+          const evalBadge = (ev: number) => {
+            if (ev <= 1e-30) return { text: 'Excellent', color: 'text-[#22C55E]', bg: 'bg-[#22C55E]/10 border-[#22C55E]/30' };
+            if (ev <= 1e-10) return { text: 'Strong', color: 'text-[#3B82F6]', bg: 'bg-[#3B82F6]/10 border-[#3B82F6]/30' };
+            if (ev <= 1e-5)  return { text: 'Moderate', color: 'text-[#EAB308]', bg: 'bg-[#EAB308]/10 border-[#EAB308]/30' };
+            return { text: 'Weak', color: 'text-[#EF4444]', bg: 'bg-[#EF4444]/10 border-[#EF4444]/30' };
+          };
+
+          const toggleSort = (field: 'identity' | 'evalue' | 'bitscore') => {
+            if (sortField === field) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
+            else { setSortField(field); setSortDir(field === 'evalue' ? 'asc' : 'desc'); }
+          };
+
+          // Extract clean protein name from annotation string
+          const cleanProteinName = (ann: string) => {
+            const match = ann.match(/\(([^)]+)\)/);
+            return match ? match[1] : ann.split('Match:')[1]?.trim() || ann;
+          };
+
+          return (
+            <div className="flex flex-col gap-6">
+              {/* Header */}
+              <div className="border-b border-[#1F2937] pb-3">
+                <h4 className="text-sm font-bold text-[#60A5FA] font-mono flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-[#3B82F6]" />
+                  DIAMOND BLASTp Homology Analysis
+                </h4>
+                <p className="text-xs text-gray-400 mt-1">
+                  Sequence similarity search against curated SwissProt protein database using DIAMOND ultra-fast aligner.
+                </p>
+              </div>
+
+              {/* ── Summary Dashboard ── */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-[#0B1220] p-4 rounded-lg border border-[#1F2937] flex flex-col gap-1">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase tracking-wide">Total Hits</p>
+                  <p className="text-2xl font-bold font-mono text-white">{totalHits}</p>
+                  <p className="text-[10px] text-gray-500">aligned sequences</p>
+                </div>
+                <div className="bg-[#0B1220] p-4 rounded-lg border border-[#1F2937] flex flex-col gap-1">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase tracking-wide">Unique Targets</p>
+                  <p className="text-2xl font-bold font-mono text-[#06B6D4]">{uniqueTargets.length}</p>
+                  <p className="text-[10px] text-gray-500">SwissProt proteins</p>
+                </div>
+                <div className="bg-[#0B1220] p-4 rounded-lg border border-[#1F2937] flex flex-col gap-1">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase tracking-wide">Avg Identity</p>
+                  <p className="text-2xl font-bold font-mono" style={{ color: identityColor(avgIdentity) }}>
+                    {avgIdentity.toFixed(1)}%
+                  </p>
+                  <p className="text-[10px] text-gray-500">{identityLabel(avgIdentity)} confidence</p>
+                </div>
+                <div className="bg-[#0B1220] p-4 rounded-lg border border-[#1F2937] flex flex-col gap-1">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase tracking-wide">Best Hit</p>
+                  <p className="text-lg font-bold font-mono text-[#22C55E] truncate">{bestHit?.identity_percent.toFixed(1)}%</p>
+                  <p className="text-[10px] text-gray-400 truncate">{bestHit?.subject_protein}</p>
+                </div>
+              </div>
+
+              {/* ── Confidence Distribution ── */}
+              <div className="bg-[#0B1220] p-4 rounded-lg border border-[#1F2937]">
+                <p className="text-[10px] text-gray-500 font-mono uppercase tracking-wide mb-3">Hit Confidence Distribution</p>
+                <div className="flex gap-2 items-end h-6 w-full">
+                  <div 
+                    className="rounded-sm transition-all duration-500" 
+                    style={{ 
+                      width: `${totalHits > 0 ? (highConfCount / totalHits) * 100 : 0}%`, 
+                      height: '100%', 
+                      backgroundColor: '#22C55E',
+                      minWidth: highConfCount > 0 ? '20px' : '0px'
+                    }} 
+                  />
+                  <div 
+                    className="rounded-sm transition-all duration-500" 
+                    style={{ 
+                      width: `${totalHits > 0 ? (medConfCount / totalHits) * 100 : 0}%`, 
+                      height: '100%', 
+                      backgroundColor: '#EAB308',
+                      minWidth: medConfCount > 0 ? '20px' : '0px'
+                    }} 
+                  />
+                  <div 
+                    className="rounded-sm transition-all duration-500" 
+                    style={{ 
+                      width: `${totalHits > 0 ? (lowConfCount / totalHits) * 100 : 0}%`, 
+                      height: '100%', 
+                      backgroundColor: '#EF4444',
+                      minWidth: lowConfCount > 0 ? '20px' : '0px'
+                    }} 
+                  />
+                </div>
+                <div className="flex gap-4 mt-2">
+                  <span className="text-[10px] font-mono text-gray-400 flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-full bg-[#22C55E]" /> High (≥60%): {highConfCount}
+                  </span>
+                  <span className="text-[10px] font-mono text-gray-400 flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-full bg-[#EAB308]" /> Moderate (30-60%): {medConfCount}
+                  </span>
+                  <span className="text-[10px] font-mono text-gray-400 flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-full bg-[#EF4444]" /> Low (&lt;30%): {lowConfCount}
+                  </span>
+                </div>
+              </div>
+
+              {/* ── Top Target Proteins Distribution ── */}
+              <div className="bg-[#0B1220] p-4 rounded-lg border border-[#1F2937]">
+                <p className="text-[10px] text-gray-500 font-mono uppercase tracking-wide mb-3">Top SwissProt Target Proteins</p>
+                <div className="flex flex-col gap-2">
+                  {topTargets.map(([protein, count]) => (
+                    <div key={protein} className="flex items-center gap-3">
+                      <span className="text-[10px] font-mono text-[#60A5FA] w-36 truncate">{protein}</span>
+                      <div className="flex-1 h-5 bg-[#111827] rounded-sm overflow-hidden relative">
+                        <div
+                          className="h-full rounded-sm transition-all duration-700"
+                          style={{
+                            width: `${(count / maxFreq) * 100}%`,
+                            background: 'linear-gradient(90deg, #3B82F6, #06B6D4)'
+                          }}
+                        />
+                        <span className="absolute right-2 top-0.5 text-[9px] font-mono text-gray-300">{count} hits</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* ── Search + Sort Controls ── */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="relative flex-1 min-w-[200px] max-w-sm">
+                  <input
+                    type="text"
+                    placeholder="Search by query, target, or annotation..."
+                    value={searchFilter}
+                    onChange={e => setSearchFilter(e.target.value)}
+                    className="w-full bg-[#0B1220] border border-[#1F2937] rounded px-3 py-2 text-xs font-mono text-white placeholder-gray-500 focus:border-[#3B82F6] focus:outline-none transition-colors"
+                  />
+                  {searchFilter && (
+                    <button
+                      onClick={() => setSearchFilter('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  {(['identity', 'evalue', 'bitscore'] as const).map(f => (
+                    <button
+                      key={f}
+                      onClick={() => toggleSort(f)}
+                      className={`text-[10px] font-mono uppercase px-3 py-1.5 rounded border transition-colors ${
+                        sortField === f
+                          ? 'bg-[#3B82F6]/20 border-[#3B82F6]/50 text-[#60A5FA]'
+                          : 'bg-[#0B1220] border-[#1F2937] text-gray-400 hover:border-gray-500'
+                      }`}
+                    >
+                      {f === 'identity' ? 'Identity %' : f === 'evalue' ? 'E-Value' : 'Bit Score'}
+                      {sortField === f && <span className="ml-1">{sortDir === 'desc' ? '↓' : '↑'}</span>}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[10px] text-gray-500 font-mono">
+                  Showing {sorted.length} of {totalHits}
+                </span>
+              </div>
+
+              {/* ── Results Table ── */}
+              <div className="overflow-x-auto rounded-lg border border-[#1F2937]">
+                <table className="min-w-full divide-y divide-[#1F2937] text-sm">
+                  <thead className="bg-[#0B1220]">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-[10px] font-mono text-gray-500 uppercase tracking-wider">#</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-mono text-gray-500 uppercase tracking-wider">Query Seq</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-mono text-gray-500 uppercase tracking-wider">SwissProt Target</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-mono text-gray-500 uppercase tracking-wider">Protein Function</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-mono text-gray-500 uppercase tracking-wider">Identity</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-mono text-gray-500 uppercase tracking-wider">E-Value</th>
+                      <th className="px-4 py-3 text-left text-[10px] font-mono text-gray-500 uppercase tracking-wider">Bit Score</th>
+                      <th className="px-4 py-3 text-right text-[10px] font-mono text-gray-500 uppercase tracking-wider">Links</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                  </thead>
+                  <tbody className="divide-y divide-[#111827]">
+                    {sorted.map((ann, idx) => {
+                      const badge = evalBadge(ann.evalue);
+                      const protName = cleanProteinName(ann.annotation);
+                      const rawRow = `Query: ${ann.query_protein} | Subject: ${ann.subject_protein} | Identity: ${ann.identity_percent}% | E-value: ${ann.evalue} | Bitscore: ${ann.bitscore} | Annotation: ${ann.annotation}`;
+                      const uniprotId = ann.subject_protein.split('_')[0];
+
+                      return (
+                        <tr key={idx} className="hover:bg-[#172033] transition-colors group">
+                          <td className="px-4 py-3 text-[10px] font-mono text-gray-600">{idx + 1}</td>
+                          <td className="px-4 py-3 font-mono font-bold text-[#60A5FA] text-xs">{ann.query_protein}</td>
+                          <td className="px-4 py-3">
+                            <span className="font-mono text-xs text-white font-semibold">{ann.subject_protein}</span>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-300 max-w-[180px] truncate" title={protName}>
+                            {protName}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-16 h-2 bg-[#111827] rounded-full overflow-hidden">
+                                <div
+                                  className="h-full rounded-full transition-all duration-500"
+                                  style={{
+                                    width: `${Math.min(ann.identity_percent, 100)}%`,
+                                    backgroundColor: identityColor(ann.identity_percent)
+                                  }}
+                                />
+                              </div>
+                              <span className="text-xs font-mono font-semibold" style={{ color: identityColor(ann.identity_percent) }}>
+                                {ann.identity_percent.toFixed(1)}%
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`text-[9px] font-mono px-2 py-0.5 rounded border ${badge.bg} ${badge.color}`}>
+                              {ann.evalue.toExponential(2)} · {badge.text}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-xs text-gray-300">{ann.bitscore?.toFixed(1) || '—'}</td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex gap-1.5 justify-end opacity-60 group-hover:opacity-100 transition-opacity">
+                              <a
+                                href={`https://www.uniprot.org/uniprot/${uniprotId}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[9px] font-mono px-2 py-1 rounded bg-[#111827] border border-[#1F2937] text-[#60A5FA] hover:border-[#3B82F6] hover:text-white transition-colors"
+                                title="View on UniProt"
+                              >
+                                UniProt ↗
+                              </a>
+                              <button
+                                onClick={() => copyAnnotationRow(rawRow, idx)}
+                                className="text-[9px] font-mono px-2 py-1 rounded bg-[#111827] border border-[#1F2937] text-gray-400 hover:border-gray-500 hover:text-white transition-colors"
+                              >
+                                {copiedIndex === idx ? '✓' : 'Copy'}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
 
         {activeTab === 'taxonomy' && results.taxonomy_results && (
           <TaxonomyTree taxonomy={results.taxonomy_results} />
@@ -424,9 +671,9 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
                     {results.kegg_results.map((kegg, idx) => {
                       const cleanId = kegg.pathway_id.trim();
                       const isKeggMap = /^[a-zA-Z]{3,4}\d+$/.test(cleanId) || cleanId.startsWith("map") || cleanId.startsWith("hsa");
-                      const url = isKeggMap 
+                      const url = (kegg as any).url || (isKeggMap 
                         ? `https://www.genome.jp/dbget-bin/www_bget?pathway+${cleanId}`
-                        : `https://www.google.com/search?q=KEGG+pathway+${encodeURIComponent(kegg.pathway_name)}`;
+                        : `https://www.google.com/search?q=KEGG+pathway+${encodeURIComponent(kegg.pathway_name)}`);
 
                       return (
                         <tr key={idx} className="hover:bg-[#172033]">

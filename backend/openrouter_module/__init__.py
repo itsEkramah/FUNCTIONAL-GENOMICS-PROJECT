@@ -1,0 +1,7 @@
+# OpenRouter Fallback Integration Module for PathoScope AI
+from backend.openrouter_module.config import OPENROUTER_API_KEY, PRIORITY_MODELS
+from backend.openrouter_module.openrouter_client import OpenRouterClient
+from backend.openrouter_module.model_fallback_manager import ModelFallbackManager
+from backend.openrouter_module.pubmed_service import PubMedService
+from backend.openrouter_module.biological_interpreter import BiologicalInterpreter
+from backend.openrouter_module.report_generator import ReportGenerator

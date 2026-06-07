@@ -86,58 +86,172 @@ You must follow these rules:
 1. Every claim must cite the specific subject protein or PMID number supporting it.
 2. If there are no active annotations, output: "Insufficient evidence for interpretation". Do not hallucinate clinical symptoms or replication mechanisms.
 3. Your response must consist exactly of these 5 sections, formatted as markdown headers:
-   - ### Findings: [Summary of proteins, pathways, and taxons identified]
+   - ### Findings: [Summary of proteins, pathways, and taxons identified. Explicitly highlight "Why this gene is significant" for the top annotated genes.]
    - ### Evidence: [Citations of alignment scores and PMIDs]
-   - ### Interpretation: [Pathology explanation of the organism]
+   - ### Interpretation: [Detailed pathology explanation. Explicitly analyze "Why this pathway is activated" based on the matched genomic markers, and detail any "Therapeutic implications" or target options.]
    - ### Confidence: [HIGH / MEDIUM / LOW with reason]
    - ### Limitations: [Analysis bottlenecks and lack of wet-lab validation]
 """
 
-    # 2. Select API route based on keys loading
-    if settings.is_gemini_available:
-        log_logger.info("Invoking Google Gemini API...")
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=settings.gemini_api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash')
-            response = model.generate_content(
-                contents=[system_instruction, prompt]
-            )
-            parsed = _parse_markdown_response(response.text, "gemini", "gemini-2.0-flash")
-            _commit_ai_result(job_id, parsed)
-            return parsed
-        except Exception as gemini_err:
-            log_logger.error(f"Gemini API request failed: {str(gemini_err)}. Attempting OpenAI failover.")
-            
+    # 2. Select API route — try OpenAI first (primary), then Gemini as secondary
+    # Reason: OpenAI key is valid; Gemini key may not be available
     if settings.is_openai_available:
         log_logger.info("Invoking OpenAI GPT API...")
         try:
             from openai import OpenAI
             client = OpenAI(api_key=settings.openai_api_key)
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2
-            )
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=2000
+                )
+            except Exception as quota_err:
+                if "quota" in str(quota_err).lower() or "rate" in str(quota_err).lower():
+                    log_logger.warning(f"GPT-4o quota/rate error: {quota_err}. Trying gpt-3.5-turbo fallback.")
+                    response = client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": system_instruction},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.2,
+                        max_tokens=2000
+                    )
+                else:
+                    raise
             text = response.choices[0].message.content
-            parsed = _parse_markdown_response(text, "openai", "gpt-4o")
+            parsed = _parse_markdown_response(text, "openai", response.model)
             _commit_ai_result(job_id, parsed)
             return parsed
         except Exception as openai_err:
-            log_logger.error(f"OpenAI API request failed: {str(openai_err)}")
+            log_logger.error(f"OpenAI API request failed: {str(openai_err)}. Attempting Gemini failover.")
 
-    # 3. Fallback: Offline Rule-Based Summary
-    log_logger.warning("Active API keys missing or requests failed. Running offline rule-based interpretation.")
+    if settings.is_gemini_available:
+        log_logger.info("Invoking Google Gemini API...")
+        import time
+        # Try multiple Gemini models in order of preference
+        gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        last_gemini_err = None
+        
+        for model_name in gemini_models:
+            for attempt in range(2):  # 2 attempts per model
+                try:
+                    from google import genai
+                    client = genai.Client(api_key=settings.gemini_api_key)
+                    log_logger.info(f"Trying Gemini model: {model_name} (attempt {attempt + 1})")
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=[system_instruction + "\n\n" + prompt]
+                    )
+                    parsed = _parse_markdown_response(response.text, "gemini", model_name)
+                    _commit_ai_result(job_id, parsed)
+                    log_logger.info(f"Gemini {model_name} succeeded.")
+                    return parsed
+                except Exception as gemini_err:
+                    last_gemini_err = gemini_err
+                    err_str = str(gemini_err)
+                    log_logger.warning(f"Gemini {model_name} attempt {attempt + 1} failed: {err_str[:200]}")
+                    # If it's a 503/overloaded error, wait and retry
+                    if "503" in err_str or "UNAVAILABLE" in err_str or "overloaded" in err_str.lower():
+                        time.sleep(3)
+                        continue
+                    # If it's a different error (e.g. model not found), skip to next model
+                    break
+        
+        if last_gemini_err:
+            log_logger.error(f"All Gemini models failed. Last error: {str(last_gemini_err)[:300]}")
+
+    # 3. OpenRouter fallback (uses raw HTTP to avoid OpenAI SDK version issues)
+    if settings.is_openrouter_available:
+        log_logger.info("Invoking OpenRouter API as final LLM fallback...")
+        import time
+        import requests as _requests
+        
+        openrouter_models = [
+            "deepseek/deepseek-r1-0528",
+            "deepseek/deepseek-v3.2",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "openrouter/free",
+        ]
+        last_or_err = None
+        
+        for or_model in openrouter_models:
+            try:
+                log_logger.info(f"Trying OpenRouter model: {or_model}")
+                # Build JSON request payload
+                payload = {
+                    "model": or_model,
+                    "messages": [
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 2000
+                }
+                # Enable reasoning for models that support it
+                if "deepseek-r1" in or_model or "deepseek-v3" in or_model or "nemotron" in or_model or "free" in or_model:
+                    payload["reasoning"] = {"enabled": True}
+                
+                or_resp = _requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.openrouter_api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://pathoscope-genomics.ai",
+                        "X-Title": "PathoScope AI Pipeline"
+                    },
+                    json=payload,
+                    timeout=60
+                )
+                or_resp.raise_for_status()
+                or_data = or_resp.json()
+                message = or_data.get("choices", [{}])[0].get("message", {})
+                text = message.get("content", "")
+                
+                # Extract thinking/reasoning details if available
+                reasoning = message.get("reasoning") or ""
+                reasoning_details = message.get("reasoning_details")
+                if reasoning_details and isinstance(reasoning_details, list):
+                    reasoning_list = []
+                    for rd in reasoning_details:
+                        if isinstance(rd, dict) and rd.get("text"):
+                            reasoning_list.append(rd["text"])
+                    if reasoning_list:
+                        reasoning = "\n".join(reasoning_list)
+                
+                if text and len(text.strip()) > 50:
+                    parsed = _parse_markdown_response(text, "openrouter", or_model)
+                    if reasoning:
+                        parsed["limitations"] = parsed["limitations"] + f"\n\n### AI Thinking Process:\n{reasoning.strip()}"
+                    _commit_ai_result(job_id, parsed)
+                    log_logger.info(f"OpenRouter {or_model} succeeded.")
+                    return parsed
+                else:
+                    log_logger.warning(f"OpenRouter {or_model} returned empty/short response, trying next model.")
+                    continue
+            except Exception as or_err:
+                last_or_err = or_err
+                err_str = str(or_err)
+                log_logger.warning(f"OpenRouter {or_model} failed: {err_str[:200]}")
+                time.sleep(1)
+                continue
+        
+        if last_or_err:
+            log_logger.error(f"All OpenRouter models failed. Last error: {str(last_or_err)[:300]}")
+
+    # 4. Final Fallback: Offline Rule-Based Summary
+    log_logger.warning("All LLM providers failed (OpenAI/Gemini/OpenRouter). Running offline rule-based interpretation.")
     findings = f"Identified {len(annotations)} SwissProt annotations, {len(domains)} Pfam domain signatures, and {len(pathways)} biochemical pathways for organism '{organism_name}'."
     evidence = f"Aligned queries to SwissProt targets (e.g. {annotations[0]['subject_protein'] if annotations else 'None'}) and Pfam entries ({domains[0]['pfam_name'] if domains else 'None'}). Literature supported by PMIDs: {', '.join([a['pmid'] for a in articles])}."
     
-    # If keys are missing, return low confidence with warning
     interpretation = f"PathoScope offline diagnostic completed. Mapped species is {organism_name}. Detailed pathobiology review requires active Gemini or OpenAI API keys in .env."
     confidence = "MEDIUM" if articles else "LOW"
-    limitations = "No active LLM API keys configured. Running under offline fallback mode. Results lack synthesis."
+    limitations = "All LLM API providers failed (OpenAI quota exceeded, Gemini unavailable, OpenRouter unreachable). Running under offline fallback mode. Results lack synthesis."
 
     parsed = {
         "ai_provider": "offline",
@@ -295,48 +409,142 @@ You must follow these rules:
 1. Every claim must cite the specific gene, pathway term, or PMID number supporting it.
 2. Do not hallucinate clinical symptoms or replication mechanisms not backed by the input data.
 3. Your response must consist exactly of these 5 sections, formatted as markdown headers:
-   - ### Evidence: [Citations of statistical scores, fold changes, and PMIDs]
-   - ### Analysis: [Pathology explanation of the cellular processes altered based on DEGs and enrichment]
-   - ### Conclusion: [Synthesis and biological summary of transcriptomics outcomes]
+   - ### Evidence: [Citations of statistical scores, fold changes, and PMIDs. Explicitly explain "Why this gene is significant" for your key differentially expressed genes.]
+   - ### Analysis: [Pathology explanation of the cellular processes altered based on DEGs and enrichment. Explicitly analyze "Why this pathway is activated" based on the matched KEGG terms.]
+   - ### Conclusion: [Synthesis and biological summary of transcriptomics outcomes. Explicitly detail "Therapeutic implications" and downstream target potentials.]
    - ### Confidence: [HIGH / MEDIUM / LOW with reason]
    - ### Limitations: [Analysis bottlenecks, such as a lack of wet-lab validation]
 """
 
-    # 2. Select API route based on keys loading
-    if settings.is_gemini_available:
-        log_logger.info("Invoking Google Gemini API for DEG...")
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=settings.gemini_api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash')
-            response = model.generate_content(
-                contents=[system_instruction, prompt]
-            )
-            parsed = _parse_deg_markdown_response(response.text, "gemini", "gemini-2.0-flash")
-            _commit_ai_result(job_id, parsed)
-            return parsed
-        except Exception as gemini_err:
-            log_logger.error(f"Gemini API request failed: {str(gemini_err)}. Attempting OpenAI failover.")
-            
+    # 2. Select API route — try OpenAI first (primary), then Gemini as secondary
     if settings.is_openai_available:
         log_logger.info("Invoking OpenAI GPT API for DEG...")
         try:
             from openai import OpenAI
             client = OpenAI(api_key=settings.openai_api_key)
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2
-            )
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=2000
+                )
+            except Exception as quota_err:
+                if "quota" in str(quota_err).lower() or "rate" in str(quota_err).lower():
+                    log_logger.warning(f"GPT-4o quota/rate error: {quota_err}. Trying gpt-3.5-turbo fallback.")
+                    response = client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": system_instruction},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.2,
+                        max_tokens=2000
+                    )
+                else:
+                    raise
             text = response.choices[0].message.content
-            parsed = _parse_deg_markdown_response(text, "openai", "gpt-4o")
+            parsed = _parse_deg_markdown_response(text, "openai", response.model)
             _commit_ai_result(job_id, parsed)
             return parsed
         except Exception as openai_err:
-            log_logger.error(f"OpenAI API request failed: {str(openai_err)}")
+            log_logger.error(f"OpenAI API request failed: {str(openai_err)}. Attempting Gemini failover.")
+
+    if settings.is_gemini_available:
+        log_logger.info("Invoking Google Gemini API for DEG...")
+        try:
+            from google import genai
+            client = genai.Client(api_key=settings.gemini_api_key)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[system_instruction + "\n\n" + prompt]
+            )
+            parsed = _parse_deg_markdown_response(response.text, "gemini", "gemini-2.5-flash")
+            _commit_ai_result(job_id, parsed)
+            return parsed
+        except Exception as gemini_err:
+            log_logger.error(f"Gemini API request failed: {str(gemini_err)}")
+
+    # 2b. OpenRouter fallback for DEG
+    if settings.is_openrouter_available:
+        log_logger.info("Invoking OpenRouter API as LLM fallback for DEG...")
+        import time
+        import requests as _requests
+        
+        openrouter_models = [
+            "deepseek/deepseek-r1-0528",
+            "deepseek/deepseek-v3.2",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "openrouter/free",
+        ]
+        last_or_err = None
+        
+        for or_model in openrouter_models:
+            try:
+                log_logger.info(f"Trying OpenRouter model: {or_model} for DEG")
+                # Build JSON request payload
+                payload = {
+                    "model": or_model,
+                    "messages": [
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 2000
+                }
+                # Enable reasoning for models that support it
+                if "deepseek-r1" in or_model or "deepseek-v3" in or_model or "nemotron" in or_model or "free" in or_model:
+                    payload["reasoning"] = {"enabled": True}
+                
+                or_resp = _requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.openrouter_api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://pathoscope-genomics.ai",
+                        "X-Title": "PathoScope AI Pipeline"
+                    },
+                    json=payload,
+                    timeout=60
+                )
+                or_resp.raise_for_status()
+                or_data = or_resp.json()
+                message = or_data.get("choices", [{}])[0].get("message", {})
+                text = message.get("content", "")
+                
+                # Extract thinking/reasoning details if available
+                reasoning = message.get("reasoning") or ""
+                reasoning_details = message.get("reasoning_details")
+                if reasoning_details and isinstance(reasoning_details, list):
+                    reasoning_list = []
+                    for rd in reasoning_details:
+                        if isinstance(rd, dict) and rd.get("text"):
+                            reasoning_list.append(rd["text"])
+                    if reasoning_list:
+                        reasoning = "\n".join(reasoning_list)
+                
+                if text and len(text.strip()) > 50:
+                    parsed = _parse_deg_markdown_response(text, "openrouter", or_model)
+                    if reasoning:
+                        parsed["limitations"] = parsed["limitations"] + f"\n\n### AI Thinking Process:\n{reasoning.strip()}"
+                    _commit_ai_result(job_id, parsed)
+                    log_logger.info(f"OpenRouter {or_model} succeeded for DEG.")
+                    return parsed
+                else:
+                    log_logger.warning(f"OpenRouter {or_model} returned empty/short response, trying next model.")
+                    continue
+            except Exception as or_err:
+                last_or_err = or_err
+                err_str = str(or_err)
+                log_logger.warning(f"OpenRouter {or_model} failed for DEG: {err_str[:200]}")
+                time.sleep(1)
+                continue
+        
+        if last_or_err:
+            log_logger.error(f"All OpenRouter models failed for DEG. Last error: {str(last_or_err)[:300]}")
 
     # 3. Fallback: Offline Rule-Based Summary
     log_logger.warning("Active API keys missing or requests failed. Running offline rule-based interpretation.")

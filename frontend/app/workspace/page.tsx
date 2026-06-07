@@ -5,7 +5,6 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { Dropzone } from '../../components/Dropzone';
 import { PipelineSteps } from '../../components/PipelineSteps';
 import { Terminal } from '../../components/Terminal';
-import { ResultsViewer } from '../../components/ResultsViewer';
 import { useJobs } from '../../hooks/useJobs';
 import { api } from '../../services/api';
 
@@ -46,6 +45,19 @@ function WorkspaceContent() {
   }, [jobId]);
 
   const isRunning = job ? job.status === 'RUNNING' : false;
+  const hasNavigatedRef = React.useRef(false);
+
+  // Auto-navigate to full-page results when pipeline completes
+  useEffect(() => {
+    if (job?.status === 'COMPLETED' && jobId && results && !hasNavigatedRef.current) {
+      hasNavigatedRef.current = true;
+      // Small delay to let the user see the "Completed" badge before navigating
+      const timer = setTimeout(() => {
+        router.push(`/workspace/results?jobId=${jobId}`);
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [job?.status, jobId, results, router]);
 
   return (
     <div className="flex-1 w-full h-[calc(100vh-64px)] grid grid-cols-12 overflow-hidden bg-[#0c1321] text-[#dce2f6]">
@@ -117,11 +129,61 @@ function WorkspaceContent() {
         </div>
       </section>
 
-      {/* Right Panel: Results Viewer (5/12 width) */}
+      {/* Right Panel: Results Preview (5/12 width) */}
       <section className="col-span-5 bg-[#151b2a] flex flex-col overflow-hidden">
-        {results ? (
-          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-            <ResultsViewer results={results} />
+        {job?.status === 'COMPLETED' && results ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center p-8 gap-6 select-none">
+            {/* Success Animation */}
+            <div className="relative">
+              <div className="w-20 h-20 rounded-full bg-[#22C55E]/10 border-2 border-[#22C55E]/30 flex items-center justify-center">
+                <span className="material-symbols-outlined text-4xl text-[#22C55E]">check_circle</span>
+              </div>
+              <div className="absolute inset-0 w-20 h-20 rounded-full border-2 border-[#22C55E]/20 animate-ping" />
+            </div>
+
+            <div>
+              <p className="font-bold text-xl text-white mb-2">Analysis Complete</p>
+              <p className="text-sm text-gray-400 max-w-sm">
+                Your pipeline has finished processing. The full Scientific Analysis Workspace is ready.
+              </p>
+            </div>
+
+            {/* Summary Quick Stats */}
+            <div className="grid grid-cols-2 gap-3 w-full max-w-xs">
+              <div className="bg-[#0B1220] rounded-lg p-3 border border-[#1F2937]">
+                <p className="text-[10px] text-gray-500 font-mono uppercase">Workflow</p>
+                <p className="text-sm font-bold text-[#60A5FA]">{results.workflow_type}</p>
+              </div>
+              <div className="bg-[#0B1220] rounded-lg p-3 border border-[#1F2937]">
+                <p className="text-[10px] text-gray-500 font-mono uppercase">Status</p>
+                <p className="text-sm font-bold text-[#22C55E]">Completed</p>
+              </div>
+              {results.annotations && (
+                <div className="bg-[#0B1220] rounded-lg p-3 border border-[#1F2937]">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase">Annotations</p>
+                  <p className="text-sm font-bold text-white">{results.annotations.length}</p>
+                </div>
+              )}
+              {results.kegg_results && (
+                <div className="bg-[#0B1220] rounded-lg p-3 border border-[#1F2937]">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase">Pathways</p>
+                  <p className="text-sm font-bold text-white">{results.kegg_results.length}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Primary CTA */}
+            <button
+              onClick={() => router.push(`/workspace/results?jobId=${jobId}`)}
+              className="bg-[#3B82F6] hover:bg-blue-600 text-white font-semibold px-8 py-3.5 rounded-lg transition-all flex items-center gap-3 shadow-lg shadow-[#3B82F6]/20 hover:shadow-[#3B82F6]/40 mt-2"
+            >
+              <span className="material-symbols-outlined text-lg">open_in_new</span>
+              Open Full Results Workspace
+            </button>
+
+            <p className="text-[10px] text-gray-600 font-mono mt-1">
+              Redirecting automatically...
+            </p>
           </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 gap-3 select-none">
@@ -129,9 +191,15 @@ function WorkspaceContent() {
             <div>
               <p className="font-semibold text-[#F9FAFB] text-sm">Results Viewer</p>
               <p className="text-xs text-gray-500 max-w-xs mt-1">
-                Data outputs, Pfam domain architectures, and PubMed interpretations will populate here as the pipeline executes.
+                When the pipeline completes, results will open in a full-page Scientific Analysis Workspace with all tabs.
               </p>
             </div>
+            {isRunning && (
+              <div className="flex items-center gap-2 mt-4">
+                <span className="material-symbols-outlined text-lg text-[#3B82F6] animate-spin">sync</span>
+                <span className="text-xs text-gray-400">Pipeline executing... {job?.progress_percent || 0}%</span>
+              </div>
+            )}
           </div>
         )}
       </section>

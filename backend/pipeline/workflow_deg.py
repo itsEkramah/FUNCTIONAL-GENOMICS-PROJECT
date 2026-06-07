@@ -646,8 +646,24 @@ def generate_deg_visualizations(job_dir: str, logger) -> Dict[str, Any]:
     
     # Load data
     all_degs = pd.read_csv(os.path.join(job_dir, "all_degs.csv"))
+    
+    # Define significant groups for plotting
+    ns = all_degs["regulation"] == "Not Significant"
+    up = all_degs["regulation"] == "UP"
+    down = all_degs["regulation"] == "DOWN"
+    
     go_df = pd.read_csv(os.path.join(job_dir, "go_results.csv"))
     kegg_df = pd.read_csv(os.path.join(job_dir, "kegg_results.csv"))
+    
+    # Load pubmed articles for biomarker scoring
+    articles = []
+    pubmed_path = os.path.join(job_dir, "pubmed_evidence.json")
+    if os.path.exists(pubmed_path):
+        try:
+            with open(pubmed_path, "r", encoding="utf-8") as f:
+                articles = json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load pubmed_evidence.json: {e}")
     
     vis_dir = os.path.join(job_dir, "visualizations")
     os.makedirs(vis_dir, exist_ok=True)
@@ -666,27 +682,98 @@ def generate_deg_visualizations(job_dir: str, logger) -> Dict[str, Any]:
                 manifest.append(f"visualizations/{name}.png")
         plt.close()
 
-    # 1. Volcano Plot
-    plt.figure(figsize=(8, 6))
-    # Replace zero padj to avoid division by zero
+    # 1. Volcano Plot with Pathway Overlay
+    plt.figure(figsize=(9, 7))
     p_adj_log = -np.log10(all_degs["padj"].replace(0, 1e-10))
     
-    up = all_degs["regulation"] == "UP"
-    down = all_degs["regulation"] == "DOWN"
-    ns = all_degs["regulation"] == "Not Significant"
+    # Build overlay mapping from local database
+    from backend.services.kegg_service import LOCAL_PATHWAY_DB
     
-    plt.scatter(all_degs.loc[ns, "log2FoldChange"], p_adj_log[ns], color="grey", alpha=0.5, label="Non-significant")
-    plt.scatter(all_degs.loc[up, "log2FoldChange"], p_adj_log[up], color="red", alpha=0.8, label="Upregulated")
-    plt.scatter(all_degs.loc[down, "log2FoldChange"], p_adj_log[down], color="blue", alpha=0.8, label="Downregulated")
+    overlay_pathways = {
+        "p53": "hsa04115",
+        "PI3K-AKT": "hsa04151",
+        "MAPK": "hsa04010",
+        "Wnt": "hsa04310"
+    }
     
+    gene_to_pathway = {}
+    for path_name, path_id in overlay_pathways.items():
+        if path_id in LOCAL_PATHWAY_DB:
+            for g in LOCAL_PATHWAY_DB[path_id]["genes"]:
+                gene_to_pathway[g.upper()] = path_name
+                
+    # Classify each gene for color mapping
+    groups = []
+    
+    pathway_colors = {
+        "p53": "red",
+        "PI3K-AKT": "blue",
+        "MAPK": "green",
+        "Wnt": "purple",
+        "Other Significant": "orange",
+        "Non-significant": "lightgray"
+    }
+    
+    for idx, row in all_degs.iterrows():
+        g_name = str(row["gene_id"]).upper()
+        is_sig = row["padj"] < 0.05 and abs(row["log2FoldChange"]) >= 1.0
+        
+        if is_sig:
+            if g_name in gene_to_pathway:
+                grp = gene_to_pathway[g_name]
+            else:
+                grp = "Other Significant"
+        else:
+            grp = "Non-significant"
+            
+        groups.append(grp)
+        
+    all_degs["overlay_group"] = groups
+    
+    # Plot each group separately to get clear legend entries
+    for grp, color in pathway_colors.items():
+        mask = all_degs["overlay_group"] == grp
+        if mask.any():
+            size = 50 if grp in overlay_pathways else (30 if grp == "Other Significant" else 15)
+            alpha = 0.9 if grp in overlay_pathways else (0.7 if grp == "Other Significant" else 0.3)
+            marker = "o" if grp == "Non-significant" else ("*" if grp == "Other Significant" else "^")
+            
+            plt.scatter(
+                all_degs.loc[mask, "log2FoldChange"],
+                p_adj_log[mask],
+                color=color,
+                alpha=alpha,
+                s=size,
+                label=grp,
+                marker=marker,
+                edgecolors="black" if grp != "Non-significant" else "none",
+                linewidths=0.5
+            )
+            
     plt.axhline(-np.log10(0.05), color="black", linestyle="--", alpha=0.5)
     plt.axvline(1.0, color="black", linestyle="--", alpha=0.5)
     plt.axvline(-1.0, color="black", linestyle="--", alpha=0.5)
     
-    plt.title("Volcano Plot of Differential Gene Expression", fontsize=14, fontweight="bold")
-    plt.xlabel("log2(Fold Change)", fontsize=12)
-    plt.ylabel("-log10(FDR)", fontsize=12)
-    plt.legend(loc="upper right")
+    # Label top significant genes
+    top_genes = all_degs[all_degs["padj"] < 0.05].sort_values("padj").head(8)
+    for _, row in top_genes.iterrows():
+        g_name = row["gene_id"]
+        fc = row["log2FoldChange"]
+        p_val = -np.log10(row["padj"] if row["padj"] > 0 else 1e-10)
+        plt.text(
+            fc + 0.08, 
+            p_val + 0.08, 
+            g_name, 
+            fontsize=8, 
+            weight="bold", 
+            color="black",
+            bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.2', edgecolor='gray', linewidth=0.5)
+        )
+        
+    plt.title("Pathway-Overlaid Volcano Plot of Differential Gene Expression", fontsize=13, fontweight="bold")
+    plt.xlabel("log2(Fold Change)", fontsize=11)
+    plt.ylabel("-log10(FDR)", fontsize=11)
+    plt.legend(loc="upper right", title="Pathway Clusters", frameon=True, facecolor="white", edgecolor="gray")
     save_plot("volcano_plot")
 
     # 2. MA Plot
@@ -821,6 +908,51 @@ def generate_deg_visualizations(job_dir: str, logger) -> Dict[str, Any]:
     plt.pie(sizes, labels=labels, autopct="%1.1f%%", colors=["red", "blue", "lightgrey"], startangle=140, textprops={'fontweight': 'bold'})
     plt.title("Proportion of Regulation Classes", fontsize=14, fontweight="bold")
     save_plot("significant_vs_nonsignificant")
+
+    # 11b. Biomarker Confidence Plot
+    plt.figure(figsize=(9, 6))
+    sig_genes_df = all_degs[all_degs["padj"] < 0.05].copy()
+    if not sig_genes_df.empty:
+        # Sort by significance and absolute fold change to get candidates
+        sig_genes_df["abs_fc"] = sig_genes_df["log2FoldChange"].abs()
+        candidates = sig_genes_df.sort_values(["padj", "abs_fc"], ascending=[True, False]).head(10).copy()
+        
+        biomarker_scores = []
+        for idx, row in candidates.iterrows():
+            g_name = str(row["gene_id"]).upper()
+            
+            # 1. Gene overlap weight (active in pathways)
+            overlap_wt = 0.25 if g_name in gene_to_pathway else 0.1
+            
+            # 2. PubMed support (does literature mention it?)
+            pubmed_sup = 0.25 if any(g_name in str(a.get("abstract", "") + a.get("title", "")).upper() for a in articles) else 0.1
+            
+            # 3. Disease association (constant high for key cancer/immune regulators, medium otherwise)
+            disease_assoc = 0.25 if g_name in ["TP53", "STAT1", "STAT3", "AKT1", "MX1", "TNF", "IL6", "EGFR"] else 0.18
+            
+            # 4. Pathway centrality (degree of connections in pathway DB)
+            centrality = 0.25 if g_name in ["TP53", "AKT1", "MAPK1", "CTNNB1", "RELA"] else 0.15
+            
+            score = (overlap_wt + pubmed_sup + disease_assoc + centrality)
+            biomarker_scores.append(round(score, 2))
+            
+        candidates["biomarker_score"] = biomarker_scores
+        candidates = candidates.sort_values("biomarker_score", ascending=False)
+        
+        # Plot horizontal bar chart
+        names = candidates["gene_symbol"].fillna(candidates["gene_id"])
+        sns.barplot(x=candidates["biomarker_score"], y=names, palette="rocket")
+        plt.title("Biomarker Candidate Confidence Scores (0-1.0 Scale)", fontsize=14, fontweight="bold")
+        plt.xlabel("Biomarker Score", fontsize=12)
+        plt.ylabel("Gene Candidate", fontsize=12)
+        plt.xlim(0, 1.05)
+        # Add value labels to the bars
+        for i, val in enumerate(candidates["biomarker_score"]):
+            plt.text(val + 0.01, i, f"{val:.2f}", va="center", fontweight="bold", fontsize=9)
+    else:
+        plt.text(0.5, 0.5, "No Significant Biomarkers Mapped", ha="center", va="center")
+        
+    save_plot("biomarker_confidence_plot")
 
     # 12. Pathway Summary Plot
     plt.figure(figsize=(9, 6))

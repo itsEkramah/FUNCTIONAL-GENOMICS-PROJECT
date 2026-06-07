@@ -165,16 +165,29 @@ async def get_job_results(job_id: str, db: Session = Depends(get_db)):
         ]
         
     if job.kegg_results:
-        res["kegg_results"] = [
-            {
+        from backend.services.kegg_service import LOCAL_PATHWAY_DB
+        kegg_list = []
+        for k in job.kegg_results:
+            p_id = k.pathway_id.strip()
+            url = ""
+            if p_id in LOCAL_PATHWAY_DB:
+                url = LOCAL_PATHWAY_DB[p_id]["url"]
+            elif "hsa" in p_id or "map" in p_id:
+                url = f"https://www.genome.jp/dbget-bin/www_bget?pathway+{p_id}"
+            elif p_id.startswith("R-HSA-") or "REACTOME" in p_id.upper():
+                url = f"https://reactome.org/content/detail/{p_id}"
+            else:
+                url = f"https://www.genome.jp/dbget-bin/www_bget?pathway+{p_id}"
+                
+            kegg_list.append({
                 "pathway_id": k.pathway_id,
                 "pathway_name": k.pathway_name,
                 "gene_count": k.gene_count,
                 "pvalue": k.pvalue,
-                "fdr": k.fdr
-            }
-            for k in job.kegg_results
-        ]
+                "fdr": k.fdr,
+                "url": url
+            })
+        res["kegg_results"] = kegg_list
         
     if job.taxonomy_results:
         t = job.taxonomy_results[0]
@@ -204,6 +217,23 @@ async def get_job_results(job_id: str, db: Session = Depends(get_db)):
                         "mesh_terms": a.mesh_terms if a.mesh_terms else []
                     })
         res["pubmed"] = articles
+    
+    # Fallback: load PubMed from JSON file if DB has no results
+    if "pubmed" not in res or not res.get("pubmed"):
+        import json as _json
+        from backend.config.constants import PROJECT_ROOT
+        job_dir = os.path.join(PROJECT_ROOT, "storage", "jobs", job_id)
+        for fname in ["pubmed_articles.json", "pubmed_evidence.json"]:
+            pubmed_json = os.path.join(job_dir, fname)
+            if os.path.exists(pubmed_json):
+                try:
+                    with open(pubmed_json, "r", encoding="utf-8") as f:
+                        file_articles = _json.load(f)
+                    if file_articles and isinstance(file_articles, list):
+                        res["pubmed"] = file_articles
+                        break
+                except Exception:
+                    pass
         
     if job.ai_interpretation:
         res["ai_interpretation"] = {
