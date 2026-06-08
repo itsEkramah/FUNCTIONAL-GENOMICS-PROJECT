@@ -108,7 +108,7 @@ export interface AIInterpretation {
 }
 
 export interface ReportFile {
-  report_type: 'HTML' | 'PDF' | 'CSV' | 'JSON' | 'GFF3' | 'MD';
+  report_type: string;
   report_path: string;
 }
 

@@ -1,20 +1,36 @@
 import os
+import json
 import asyncio
 from datetime import datetime
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional
 
 from backend.database import get_db
 from backend.models.job import Job, JobStep
 from backend.pipeline.workflow_fasta import run_fasta_workflow
 from backend.pipeline.workflow_fastq import run_fastq_workflow
 from backend.pipeline.workflow_deg import run_deg_workflow
+from backend.core.deg_engine import (
+    DEFAULT_FDR_THRESHOLD,
+    DEFAULT_LFC_THRESHOLD,
+    DEFAULT_MIN_CPM,
+    DEFAULT_MIN_SAMPLE_FRAC
+)
+from backend.config.constants import PROJECT_ROOT
 
 router = APIRouter()
 
 # Global set to track currently running job IDs and prevent concurrent duplication
 RUNNING_JOBS = set()
+
+class DegThresholds(BaseModel):
+    fdr_threshold: float = DEFAULT_FDR_THRESHOLD
+    lfc_threshold: float = DEFAULT_LFC_THRESHOLD
+    min_cpm: float = DEFAULT_MIN_CPM
+    min_sample_frac: float = DEFAULT_MIN_SAMPLE_FRAC
 
 def execute_pipeline(job_id: str, workflow_type: str, file_path: str):
     try:
@@ -28,6 +44,63 @@ def execute_pipeline(job_id: str, workflow_type: str, file_path: str):
         print(f"Exception running workflow {workflow_type} for job {job_id}: {str(e)}")
     finally:
         RUNNING_JOBS.discard(job_id)
+
+@router.get("/jobs/{job_id}/thresholds")
+async def get_deg_thresholds(job_id: str):
+    """Returns the current DEG analysis thresholds for a job (defaults if not set)."""
+    job_dir = os.path.join(PROJECT_ROOT, "storage", "jobs", job_id)
+    thresholds_path = os.path.join(job_dir, "thresholds.json")
+    if os.path.exists(thresholds_path):
+        try:
+            with open(thresholds_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # Return defaults
+    return {
+        "fdr_threshold": DEFAULT_FDR_THRESHOLD,
+        "lfc_threshold": DEFAULT_LFC_THRESHOLD,
+        "min_cpm": DEFAULT_MIN_CPM,
+        "min_sample_frac": DEFAULT_MIN_SAMPLE_FRAC
+    }
+
+@router.post("/jobs/{job_id}/thresholds")
+async def set_deg_thresholds(job_id: str, thresholds: DegThresholds, db: Session = Depends(get_db)):
+    """
+    Sets DEG analysis thresholds for a specific job.
+    These are saved to thresholds.json and used by the pipeline at Step 3 (Statistical Analysis).
+    Only applicable for DEG workflow jobs that have not yet completed Step 3.
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.workflow_type != "DEG":
+        raise HTTPException(status_code=400, detail="Thresholds only apply to DEG workflow jobs.")
+
+    # Validate ranges
+    if not (0 < thresholds.fdr_threshold <= 1.0):
+        raise HTTPException(status_code=422, detail="fdr_threshold must be in range (0, 1]")
+    if thresholds.lfc_threshold < 0:
+        raise HTTPException(status_code=422, detail="lfc_threshold must be >= 0")
+    if thresholds.min_cpm < 0:
+        raise HTTPException(status_code=422, detail="min_cpm must be >= 0")
+    if not (0 <= thresholds.min_sample_frac <= 1.0):
+        raise HTTPException(status_code=422, detail="min_sample_frac must be in range [0, 1]")
+
+    job_dir = os.path.join(PROJECT_ROOT, "storage", "jobs", job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    thresholds_path = os.path.join(job_dir, "thresholds.json")
+
+    data = {
+        "fdr_threshold": thresholds.fdr_threshold,
+        "lfc_threshold": thresholds.lfc_threshold,
+        "min_cpm": thresholds.min_cpm,
+        "min_sample_frac": thresholds.min_sample_frac
+    }
+    with open(thresholds_path, "w") as f:
+        json.dump(data, f, indent=4)
+
+    return {"status": "saved", "thresholds": data}
 
 @router.post("/jobs/{job_id}/start")
 async def start_job(job_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -54,6 +127,57 @@ async def start_job(job_id: str, background_tasks: BackgroundTasks, db: Session 
     
     background_tasks.add_task(execute_pipeline, job.id, job.workflow_type, file_path)
     return {"status": "RUNNING"}
+
+
+@router.post("/jobs/{job_id}/restart")
+async def restart_job(job_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """
+    Resets a DEG job's status to QUEUED and clears all prior pipeline results
+    (DegRun, reports, steps, enrichments, PubMed, AI interpretation) so that the
+    pipeline can be re-run cleanly with new threshold parameters.
+    This powers the 'Apply Thresholds & Re-run' button in the frontend.
+    """
+    from backend.models.results import DegRun, ReportResult
+    from backend.models.pubmed import PubMedQuery
+    from backend.models.ai import AIInterpretation
+    from backend.models.annotation import KeggPathwayResult, TaxonomyResult, AnnotationResult, PfamDomain
+
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.workflow_type != "DEG":
+        raise HTTPException(status_code=400, detail="Restart only supported for DEG workflow jobs.")
+    if job_id in RUNNING_JOBS or job.status == "RUNNING":
+        raise HTTPException(status_code=409, detail="Job is already running. Cancel it first.")
+
+    if not job.uploaded_file:
+        raise HTTPException(status_code=400, detail="No uploaded file associated with this job.")
+
+    # ── Cascade-delete all prior pipeline outputs ──────────────────────────────
+    db.query(DegRun).filter(DegRun.job_id == job_id).delete(synchronize_session=False)
+    db.query(ReportResult).filter(ReportResult.job_id == job_id).delete(synchronize_session=False)
+    db.query(JobStep).filter(JobStep.job_id == job_id).delete(synchronize_session=False)
+    db.query(KeggPathwayResult).filter(KeggPathwayResult.job_id == job_id).delete(synchronize_session=False)
+    db.query(TaxonomyResult).filter(TaxonomyResult.job_id == job_id).delete(synchronize_session=False)
+    db.query(AnnotationResult).filter(AnnotationResult.job_id == job_id).delete(synchronize_session=False)
+    db.query(PfamDomain).filter(PfamDomain.job_id == job_id).delete(synchronize_session=False)
+    db.query(PubMedQuery).filter(PubMedQuery.job_id == job_id).delete(synchronize_session=False)
+    db.query(AIInterpretation).filter(AIInterpretation.job_id == job_id).delete(synchronize_session=False)
+    # ───────────────────────────────────────────────────────────────────────────
+
+    # Reset the job to a fresh QUEUED state
+    job.status = "QUEUED"
+    job.progress_percent = 0
+    job.started_at = None
+    job.completed_at = None
+    job.failed_reason = None
+    db.commit()
+
+    # Trigger fresh pipeline run
+    file_path = job.uploaded_file.storage_path
+    RUNNING_JOBS.add(job_id)
+    background_tasks.add_task(execute_pipeline, job_id, job.workflow_type, file_path)
+    return {"status": "RUNNING", "message": "Job reset and restarted with new thresholds."}
 
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, db: Session = Depends(get_db)):

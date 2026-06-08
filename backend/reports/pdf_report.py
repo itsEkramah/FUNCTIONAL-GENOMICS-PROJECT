@@ -141,27 +141,36 @@ class PdfReport(BaseReport):
         
         # AI Pathobiology Summary
         story.append(Paragraph("🤖 Evidence-Grounded AI Pathobiology Summary", h2_style))
+        story.append(Paragraph(f"Provider: <b>{ai_result.get('ai_provider', 'offline')}</b> | Model: <b>{ai_result.get('model_name', 'fallback')}</b> | Confidence: <b>{ai_result.get('confidence_assessment', 'LOW')}</b>", meta_style))
+        story.append(Spacer(1, 10))
         
-        ai_data = [
-            [Paragraph(f"Provider: <b>{ai_result.get('ai_provider', 'offline')}</b> | Model: <b>{ai_result.get('model_name', 'fallback')}</b> | Confidence: <b>{ai_result.get('confidence_assessment', 'LOW')}</b>", meta_style)],
-            [Paragraph("Findings Summary", ai_title_style)],
-            [Paragraph(ai_result.get('findings', 'None'), body_style)],
-            [Paragraph("Literature Evidence", ai_title_style)],
-            [Paragraph(ai_result.get('literature_summary', 'None'), body_style)],
-            [Paragraph("Biological Pathogenesis Analysis", ai_title_style)],
-            [Paragraph(ai_result.get('biological_interpretation', 'None'), body_style)],
-            [Paragraph("Technical Limitations", ai_title_style)],
-            [Paragraph(ai_result.get('limitations', 'None'), body_style)]
-        ]
-        
-        ai_table = Table(ai_data, colWidths=[510])
-        ai_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#f8fafc")),
-            ('BOX', (0,0), (-1,-1), 1, colors.HexColor("#cbd5e1")),
-            ('PADDING', (0,0), (-1,-1), 10),
-            ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ]))
-        story.append(ai_table)
+        import re
+        def add_formatted_ai_section(title: str, text: str):
+            story.append(Paragraph(title, ai_title_style))
+            story.append(Spacer(1, 4))
+            
+            # Format and split by newline to flow correctly and support page breaks
+            lines = text.split("\n")
+            for line in lines:
+                line_strip = line.strip()
+                if not line_strip:
+                    continue
+                # Simple markdown bold/italic replacement
+                line_formatted = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", line_strip)
+                line_formatted = re.sub(r"\*(.*?)\*", r"<i>\1</i>", line_formatted)
+                
+                # Check if it starts with bullet point marker
+                if line_formatted.startswith("- ") or line_formatted.startswith("* "):
+                    line_formatted = f"&bull; {line_formatted[2:]}"
+                    
+                story.append(Paragraph(line_formatted, body_style))
+                story.append(Spacer(1, 3))
+            story.append(Spacer(1, 8))
+
+        add_formatted_ai_section("Findings Summary", ai_result.get('findings', 'None'))
+        add_formatted_ai_section("Literature Evidence", ai_result.get('literature_summary', 'None'))
+        add_formatted_ai_section("Biological Pathogenesis Analysis", ai_result.get('biological_interpretation', 'None'))
+        add_formatted_ai_section("Technical Limitations", ai_result.get('limitations', 'None'))
         
         # Page Break before tables for cleaner layout
         story.append(PageBreak())

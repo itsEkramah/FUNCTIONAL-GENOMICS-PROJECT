@@ -658,22 +658,31 @@ def map_proteins_to_kegg(proteins: List[str], log_logger) -> List[Dict[str, Any]
     cleaned_genes = []
     for prot in proteins:
         name = str(prot).strip().upper()
-        if "_" in name:
-            gene_candidate = name.split("_")[0]
-            cleaned_genes.append(gene_candidate)
-        else:
-            cleaned_genes.append(name)
+        # Normalize delimiters to underscore for uniform splitting
+        for delim in ["|", ";", "-"]:
+            name = name.replace(delim, "_")
+        tokens = [t.strip() for t in name.split("_") if t.strip()]
+        for token in tokens:
+            cleaned_genes.append(token)
             
-    # Include default mappings for classic viral proteins (POL/RDRP/ENV) as baseline pathways
+    # Include default mappings for classic viral proteins as baseline pathways
     viral_mappings = []
     for prot in set(proteins):
         prot_upper = prot.upper()
-        if "POL" in prot_upper or "RDRP" in prot_upper:
-            # Map polymerase activity to DNA repair/mitosis pathways
-            viral_mappings.append("hsa03440")  # DNA Repair pathway (Homologous recombination)
-        elif "ENV" in prot_upper or "GLYCO" in prot_upper:
-            # Map envelope binding to MAPK pathway (cell receptor signaling)
-            viral_mappings.append("hsa04010")  # MAPK Signaling pathway
+        if "POL" in prot_upper or "RDRP" in prot_upper or "REP" in prot_upper or "POLIO" in prot_upper:
+            # Map replication proteins to DNA repair, cell cycle control, and p53
+            viral_mappings.extend(["hsa03440", "hsa04110", "hsa04115"])
+        if "ENV" in prot_upper or "GLYCO" in prot_upper or "SPIKE" in prot_upper or "GP160" in prot_upper:
+            # Map envelope / entry glycoproteins to MAPK, PI3K-Akt, and immune signaling
+            viral_mappings.extend(["hsa04010", "hsa04151", "hsa04620", "hsa04060"])
+        if "CAPSID" in prot_upper or "CORE" in prot_upper or "MATRIX" in prot_upper or "STRUCT" in prot_upper:
+            # Map structural capsid proteins to Apoptosis & Autophagy
+            viral_mappings.extend(["hsa04210", "hsa04140"])
+        if "NUCLEO" in prot_upper or "NP" in prot_upper or "NS" in prot_upper:
+            # Map nucleoprotein / non-structural immune antagonists to JAK-STAT and NF-kB
+            viral_mappings.extend(["hsa04630", "hsa04064", "hsa04620"])
+            
+    viral_mappings = list(set(viral_mappings))
             
     results = []
     M = 20000
@@ -698,6 +707,8 @@ def map_proteins_to_kegg(proteins: List[str], log_logger) -> List[Dict[str, Any]
             })
             
     db_results.sort(key=lambda x: x["pvalue"])
+    p_vals = [r["pvalue"] for r in db_results]
+    adj_ps = _apply_benjamini_hochberg(p_vals)
     
     for idx, r in enumerate(db_results):
         results.append({
@@ -705,7 +716,7 @@ def map_proteins_to_kegg(proteins: List[str], log_logger) -> List[Dict[str, Any]
             "pathway_name": f"{r['name']} ({r['id']})",
             "gene_count": int(r["overlap"].split("/")[1]),
             "pvalue": r["pvalue"],
-            "fdr": r["pvalue"] * len(LOCAL_PATHWAY_DB) / (idx + 1)
+            "fdr": adj_ps[idx]
         })
         
     # Cap FDR

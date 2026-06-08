@@ -1,4 +1,5 @@
 import os
+import re
 import gzip
 import shutil
 import numpy as np
@@ -6,6 +7,204 @@ import pandas as pd
 from scipy.stats import ttest_ind, fisher_exact, t
 from statsmodels.stats.multitest import multipletests
 from typing import List, Dict, Any, Tuple, Optional
+
+# =============================================================================
+# DEFAULT THRESHOLD PARAMETERS (GEO2R / DESeq2 compatible defaults)
+# =============================================================================
+DEFAULT_FDR_THRESHOLD = 0.05      # BH-FDR adjusted p-value threshold
+DEFAULT_LFC_THRESHOLD = 1.0       # log2 fold-change threshold (|log2FC| >= 1.0 = 2-fold)
+DEFAULT_MIN_CPM = 0.5             # Minimum mean log-CPM to keep a gene (pre-filter)
+DEFAULT_MIN_SAMPLE_FRAC = 0.20   # Minimum fraction of samples with CPM > 0
+
+# =============================================================================
+# SAMPLE GROUP AUTO-DETECTION
+# =============================================================================
+
+# Keywords that identify Control / Reference group samples
+_CONTROL_KEYWORDS = [
+    "mock", "control", "ctrl", "cntrl", "normal", "healthy", "wt",
+    "wildtype", "wild_type", "baseline", "vehicle", "untreated", "nt",
+    "neg", "negative", "ref", "reference", "uninfected", "naive"
+]
+
+# Keywords that identify Treatment / Disease / Condition group samples
+_TREATMENT_KEYWORDS = [
+    "sars", "cov", "covid", "infected", "infection", "treated", "treatment",
+    "stimulated", "tnf", "il", "ifn", "virus", "viral", "lps", "rna",
+    "disease", "patient", "tumor", "cancer", "mutant", "ko", "knockout",
+    "knockdown", "kd", "overexpression", "oe", "induced", "dox", "siRNA",
+    "drug", "rux", "dex", "treated", "stressed", "hypoxia", "hpiv", "rsv",
+    "iav", "ebola", "flu", "h1n1", "h5n1", "mers"
+]
+
+def detect_sample_groups(
+    column_names: List[str],
+    log_logger=None
+) -> Tuple[List[str], List[str], str, float]:
+    """
+    Automatically detects Control (Group 1) vs Treatment/Disease (Group 2) samples
+    by matching column names against curated keyword lists.
+
+    Returns:
+        (group1_cols, group2_cols, detection_method, confidence_score)
+        where confidence_score is 0.0-1.0 (1.0 = all samples classified by keywords)
+    """
+    control_cols = []
+    treatment_cols = []
+    unclassified = []
+
+    for col in column_names:
+        col_lower = col.lower()
+        is_ctrl = any(kw in col_lower for kw in _CONTROL_KEYWORDS)
+        is_treat = any(kw in col_lower for kw in _TREATMENT_KEYWORDS)
+
+        if is_ctrl and not is_treat:
+            control_cols.append(col)
+        elif is_treat and not is_ctrl:
+            treatment_cols.append(col)
+        elif is_ctrl and is_treat:
+            # Ambiguous — prefer treatment keyword if it appears later/more prominently
+            treatment_cols.append(col)
+        else:
+            unclassified.append(col)
+
+    total = len(column_names)
+    classified = len(control_cols) + len(treatment_cols)
+    confidence = classified / total if total > 0 else 0.0
+
+    if log_logger:
+        log_logger.info(
+            f"[GroupDetect] Keyword match: Control={len(control_cols)}, "
+            f"Treatment={len(treatment_cols)}, Unclassified={len(unclassified)}, "
+            f"Confidence={confidence:.0%}"
+        )
+
+    # Case 1: Good keyword detection (>= 60% of samples classified and both groups non-empty)
+    if confidence >= 0.6 and control_cols and treatment_cols:
+        detection_method = "keyword_match"
+        if log_logger:
+            log_logger.info(
+                f"[GroupDetect] Method: keyword_match | "
+                f"Control ({len(control_cols)}): {control_cols[:5]} ... | "
+                f"Treatment ({len(treatment_cols)}): {treatment_cols[:5]} ..."
+            )
+        return control_cols, treatment_cols, detection_method, confidence
+
+    # Case 2: Partial match — try distributing unclassified to the smaller group
+    if control_cols or treatment_cols:
+        # Add unclassified to whichever group needs them for balance
+        if not control_cols:
+            # All classified as treatment, put unclassified into control
+            mid_u = len(unclassified) // 2
+            control_cols = unclassified[:mid_u] if mid_u > 0 else unclassified[:1]
+            treatment_cols = treatment_cols + unclassified[mid_u:]
+        elif not treatment_cols:
+            mid_u = len(unclassified) // 2
+            treatment_cols = unclassified[:mid_u] if mid_u > 0 else unclassified[:1]
+            control_cols = control_cols + unclassified[mid_u:]
+        else:
+            # Distribute unclassified to smaller group to balance sizes
+            for u in unclassified:
+                if len(control_cols) <= len(treatment_cols):
+                    control_cols.append(u)
+                else:
+                    treatment_cols.append(u)
+
+        detection_method = "keyword_partial"
+        if log_logger:
+            log_logger.warning(
+                f"[GroupDetect] Method: keyword_partial (confidence={confidence:.0%}). "
+                f"Unclassified samples distributed by group size."
+            )
+        return control_cols, treatment_cols, detection_method, confidence
+
+    # Case 3: No keywords matched — fallback to first-third vs last-third positional split
+    # (avoids naive 50/50 midpoint which systematically mixes alternating layouts)
+    n = len(column_names)
+    split_a = max(1, n // 3)
+    split_b = max(split_a + 1, n - n // 3)
+    control_cols = column_names[:split_a]
+    treatment_cols = column_names[split_b:]
+    if not treatment_cols:
+        treatment_cols = column_names[split_a:]
+
+    detection_method = "positional_thirds"
+    if log_logger:
+        log_logger.warning(
+            f"[GroupDetect] Method: positional_thirds (no keyword matches found). "
+            f"Control=first {len(control_cols)} samples, Treatment=last {len(treatment_cols)} samples."
+        )
+    return control_cols, treatment_cols, detection_method, 0.0
+
+
+# =============================================================================
+# LOW-EXPRESSION GENE PRE-FILTERING
+# =============================================================================
+
+def filter_low_expression_genes(
+    df_expr: pd.DataFrame,
+    min_mean_cpm: float = DEFAULT_MIN_CPM,
+    min_sample_frac: float = DEFAULT_MIN_SAMPLE_FRAC,
+    log_logger=None
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """
+    Removes genes with very low expression across samples before statistical testing.
+
+    Filters applied (both must pass):
+    1. Mean expression across all samples >= min_mean_cpm (default 0.5 log-CPM)
+    2. At least min_sample_frac fraction of samples have expression > 0
+
+    Returns:
+        (filtered_df, report_dict)
+    """
+    n_before = len(df_expr)
+    numeric_cols = df_expr.select_dtypes(include=[np.number]).columns.tolist()
+
+    if not numeric_cols:
+        report = {"n_before": n_before, "n_after": n_before, "n_removed": 0, "filter_applied": False}
+        return df_expr, report
+
+    expr_vals = df_expr[numeric_cols].values.astype(float)
+    n_samples = expr_vals.shape[1]
+
+    # Filter 1: Mean expression threshold
+    mean_expr = np.mean(expr_vals, axis=1)
+    keep_mean = mean_expr >= min_mean_cpm
+
+    # Filter 2: Minimum fraction of non-zero samples
+    nonzero_frac = np.sum(expr_vals > 0, axis=1) / n_samples
+    keep_nonzero = nonzero_frac >= min_sample_frac
+
+    keep_mask = keep_mean & keep_nonzero
+    df_filtered = df_expr[keep_mask].copy()
+    n_after = len(df_filtered)
+    n_removed = n_before - n_after
+
+    report = {
+        "n_before": n_before,
+        "n_after": n_after,
+        "n_removed": n_removed,
+        "pct_removed": round((n_removed / n_before * 100) if n_before > 0 else 0.0, 2),
+        "filter_applied": True,
+        "min_mean_cpm": min_mean_cpm,
+        "min_sample_frac": min_sample_frac,
+        "n_removed_by_low_mean": int(np.sum(~keep_mean)),
+        "n_removed_by_low_coverage": int(np.sum(keep_mean & ~keep_nonzero))
+    }
+
+    if log_logger:
+        log_logger.info(
+            f"[PreFilter] Genes before: {n_before:,} | Removed (low expr): {n_removed:,} "
+            f"({report['pct_removed']:.1f}%) | Remaining: {n_after:,}"
+        )
+        log_logger.info(
+            f"[PreFilter]   - Removed by low mean (<{min_mean_cpm}): {report['n_removed_by_low_mean']:,}"
+        )
+        log_logger.info(
+            f"[PreFilter]   - Removed by low coverage (<{min_sample_frac:.0%}): {report['n_removed_by_low_coverage']:,}"
+        )
+
+    return df_filtered, report
 
 def decompress_gzip(file_path: str, output_dir: str, log_logger=None) -> str:
     """
@@ -68,26 +267,33 @@ def apply_bh_fdr(pvalues: List[float], log_logger=None) -> List[float]:
             
     return adjusted
 
-def classify_degs(log2fcs: List[float], fdrs: List[float], log_logger=None) -> List[str]:
+def classify_degs(
+    log2fcs: List[float],
+    fdrs: List[float],
+    fdr_threshold: float = DEFAULT_FDR_THRESHOLD,
+    lfc_threshold: float = DEFAULT_LFC_THRESHOLD,
+    log_logger=None
+) -> List[str]:
     """
-    Classifies differential gene expression regulation based on fold change and FDR thresholds.
+    Classifies differential gene expression regulation based on configurable fold change
+    and FDR thresholds (GEO2R / DESeq2 compatible defaults: padj<0.05, |log2FC|>=1.0).
     """
     classes = []
     for log2fc, fdr in zip(log2fcs, fdrs):
         if log2fc is None or fdr is None or np.isnan(log2fc) or np.isnan(fdr):
             classes.append("Not Significant")
             continue
-            
-        if fdr < 0.05:
-            if log2fc >= 1.0:
+
+        if fdr < fdr_threshold:
+            if log2fc >= lfc_threshold:
                 classes.append("UP")
-            elif log2fc <= -1.0:
+            elif log2fc <= -lfc_threshold:
                 classes.append("DOWN")
             else:
                 classes.append("Not Significant")
         else:
             classes.append("Not Significant")
-            
+
     return classes
 
 def normalize_matrix(df: pd.DataFrame, log_logger=None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
@@ -146,15 +352,60 @@ def normalize_matrix(df: pd.DataFrame, log_logger=None) -> Tuple[pd.DataFrame, D
 
     return df_norm, report
 
-def run_differential_statistics(df_expr: pd.DataFrame, group1_cols: List[str], group2_cols: List[str], log_logger=None) -> pd.DataFrame:
+def run_differential_statistics(
+    df_expr: pd.DataFrame,
+    group1_cols: List[str],
+    group2_cols: List[str],
+    fdr_threshold: float = DEFAULT_FDR_THRESHOLD,
+    lfc_threshold: float = DEFAULT_LFC_THRESHOLD,
+    min_cpm: float = DEFAULT_MIN_CPM,
+    min_sample_frac: float = DEFAULT_MIN_SAMPLE_FRAC,
+    log_logger=None,
+    job_dir: Optional[str] = None
+) -> pd.DataFrame:
     """
-    Computes fold changes, Welch's t-test p-values, and BH-FDR adjusted p-values between Group 2 vs Group 1 using vectorized calculations.
+    Computes fold changes (Treatment vs Control), Welch's t-test p-values, and
+    BH-FDR adjusted p-values using vectorized numpy calculations.
+
+    Applies low-expression gene pre-filtering before testing to maximize
+    statistical power of BH-FDR correction.
     """
     if log_logger:
-        log_logger.info(f"Running vectorized t-test comparison: Group 1 ({len(group1_cols)} samples) vs Group 2 ({len(group2_cols)} samples)")
+        log_logger.info(
+            f"[DiffStats] Control (Group 1): {len(group1_cols)} samples | "
+            f"Treatment (Group 2): {len(group2_cols)} samples"
+        )
+        log_logger.info(
+            f"[DiffStats] Thresholds: FDR<{fdr_threshold}, |log2FC|>={lfc_threshold}, "
+            f"min_CPM={min_cpm}, min_sample_frac={min_sample_frac:.0%}"
+        )
 
-    X1 = df_expr[group1_cols].values.astype(float)
-    X2 = df_expr[group2_cols].values.astype(float)
+    # Pre-filter low-expression genes to improve BH-FDR power
+    df_filtered, filter_report = filter_low_expression_genes(
+        df_expr, min_mean_cpm=min_cpm, min_sample_frac=min_sample_frac, log_logger=log_logger
+    )
+
+    if job_dir and filter_report:
+        import json
+        with open(os.path.join(job_dir, "prefilter_report.json"), "w") as f:
+            json.dump(filter_report, f, indent=4)
+
+    if df_filtered.empty:
+        if log_logger:
+            log_logger.warning("[DiffStats] All genes filtered out by low-expression filter — returning empty results.")
+        return pd.DataFrame(columns=["gene_id", "Group1_mean", "Group2_mean", "log2FoldChange", "pvalue", "padj", "regulation"])
+
+    # Ensure group columns exist in filtered df
+    g1 = [c for c in group1_cols if c in df_filtered.columns]
+    g2 = [c for c in group2_cols if c in df_filtered.columns]
+
+    if not g1 or not g2:
+        if log_logger:
+            log_logger.error("[DiffStats] One or both groups have no valid columns after pre-filtering.")
+        return pd.DataFrame(columns=["gene_id", "Group1_mean", "Group2_mean", "log2FoldChange", "pvalue", "padj", "regulation"])
+
+    X1 = df_filtered[g1].values.astype(float)
+    X2 = df_filtered[g2].values.astype(float)
 
     N1 = X1.shape[1]
     N2 = X2.shape[1]
@@ -164,31 +415,32 @@ def run_differential_statistics(df_expr: pd.DataFrame, group1_cols: List[str], g
     M2 = np.mean(X2, axis=1)
 
     # Calculate variances
-    V1 = np.var(X1, axis=1, ddof=1)
-    V2 = np.var(X2, axis=1, ddof=1)
+    V1 = np.var(X1, axis=1, ddof=1) if N1 > 1 else np.zeros(X1.shape[0])
+    V2 = np.var(X2, axis=1, ddof=1) if N2 > 1 else np.zeros(X2.shape[0])
 
     # Welch's t-test formula
     denom = np.sqrt(V1 / N1 + V2 / N2)
     denom_safe = np.where(denom == 0, 1.0, denom)
     t_stat = (M2 - M1) / denom_safe
 
-    # Welch-Satterthwaite equation for degrees of freedom
+    # Welch-Satterthwaite degrees of freedom
     num_df = (V1 / N1 + V2 / N2) ** 2
-    denom_df = (V1 / N1) ** 2 / (N1 - 1) + (V2 / N2) ** 2 / (N2 - 1)
+    denom_df = (V1 / N1) ** 2 / max(N1 - 1, 1) + (V2 / N2) ** 2 / max(N2 - 1, 1)
     denom_df_safe = np.where(denom_df == 0, 1.0, denom_df)
     df_welch = num_df / denom_df_safe
 
-    # Two-tailed p-value using the survival function (1 - CDF)
+    # Two-tailed p-value using the survival function
     p_vals = t.sf(np.abs(t_stat), df_welch) * 2
 
     # Handle zero variance or NaN
     p_vals = np.where(denom == 0, 1.0, p_vals)
     p_vals = np.where(np.isnan(p_vals), 1.0, p_vals)
+    p_vals = np.clip(p_vals, 0.0, 1.0)
 
     log2fc = M2 - M1
 
     results_df = pd.DataFrame({
-        "gene_id": df_expr.index.astype(str),
+        "gene_id": df_filtered.index.astype(str),
         "Group1_mean": M1,
         "Group2_mean": M2,
         "log2FoldChange": log2fc,
@@ -196,7 +448,20 @@ def run_differential_statistics(df_expr: pd.DataFrame, group1_cols: List[str], g
     })
 
     results_df["padj"] = apply_bh_fdr(results_df["pvalue"].tolist(), log_logger)
-    results_df["regulation"] = classify_degs(results_df["log2FoldChange"].tolist(), results_df["padj"].tolist(), log_logger)
+    results_df["regulation"] = classify_degs(
+        results_df["log2FoldChange"].tolist(),
+        results_df["padj"].tolist(),
+        fdr_threshold=fdr_threshold,
+        lfc_threshold=lfc_threshold,
+        log_logger=log_logger
+    )
+
+    sig_count = (results_df["regulation"].isin(["UP", "DOWN"])).sum()
+    if log_logger:
+        log_logger.info(
+            f"[DiffStats] Results: {len(results_df):,} genes tested | "
+            f"{sig_count:,} significant (FDR<{fdr_threshold}, |log2FC|>={lfc_threshold})"
+        )
 
     return results_df
 

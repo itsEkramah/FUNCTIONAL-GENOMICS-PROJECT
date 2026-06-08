@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PipelineResults } from '../types';
 import { VolcanoPlot } from './VolcanoPlot';
 import { DomainViewer } from './DomainViewer';
@@ -18,6 +18,74 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   const workflow = results.workflow_type;
+
+  const [degThresholds, setDegThresholds] = useState({
+    fdr_threshold: 0.05,
+    lfc_threshold: 1.0,
+    min_cpm: 0.5,
+    min_sample_frac: 0.20
+  });
+  const [thresholdsLoaded, setThresholdsLoaded] = useState(false);
+  const [thresholdSaved, setThresholdSaved] = useState(false);
+  const [savingThresholds, setSavingThresholds] = useState(false);
+
+  useEffect(() => {
+    if (workflow === 'DEG' && results.job_id) {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+      fetch(`${apiBase}/jobs/${results.job_id}/thresholds`)
+        .then((res) => {
+          if (!res.ok) throw new Error('Failed to load thresholds');
+          return res.json();
+        })
+        .then((data) => {
+          setDegThresholds({
+            fdr_threshold: data.fdr_threshold ?? 0.05,
+            lfc_threshold: data.lfc_threshold ?? 1.0,
+            min_cpm: data.min_cpm ?? 0.5,
+            min_sample_frac: data.min_sample_frac ?? 0.20
+          });
+          setThresholdsLoaded(true);
+        })
+        .catch((err) => {
+          console.error('Error fetching thresholds:', err);
+          setThresholdsLoaded(true);
+        });
+    }
+  }, [workflow, results.job_id]);
+
+  const handleApplyThresholds = async () => {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+    setSavingThresholds(true);
+    setThresholdSaved(false);
+    try {
+      const res = await fetch(`${apiBase}/jobs/${results.job_id}/thresholds`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(degThresholds),
+      });
+      if (!res.ok) {
+        throw new Error('Failed to save thresholds');
+      }
+      setThresholdSaved(true);
+
+      const startRes = await fetch(`${apiBase}/jobs/${results.job_id}/restart`, {
+        method: 'POST',
+      });
+      if (!startRes.ok) {
+        const errBody = await startRes.json().catch(() => ({}));
+        throw new Error(errBody?.detail || 'Failed to restart job');
+      }
+
+      window.location.href = `/workspace?jobId=${results.job_id}`;
+    } catch (err) {
+      console.error(err);
+      alert('Error applying thresholds: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setSavingThresholds(false);
+    }
+  };
 
   const downloadFile = (reportType: string, path: string) => {
     const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
@@ -202,6 +270,160 @@ export const ResultsViewer: React.FC<ResultsViewerProps> = ({ results }) => {
                   <p className="text-2xl font-bold font-mono">{results.fastq_run.assembly_contigs}</p>
                 </div>
               </>
+            )}
+
+            {workflow === 'DEG' && thresholdsLoaded && (
+              <div className="col-span-1 md:col-span-3 bg-[#111827]/80 border border-[#30363d] rounded-xl p-6 shadow-2xl flex flex-col gap-6 transition-all duration-300 hover:border-[#3b82f6]/40">
+                <div className="flex items-center justify-between border-b border-[#30363d] pb-4">
+                  <div className="flex items-center gap-3">
+                    <span className="material-symbols-outlined text-[#3b82f6] text-2xl">tune</span>
+                    <div>
+                      <h4 className="font-bold text-base text-white">Differential Gene Expression (DEG) Parameter Settings</h4>
+                      <p className="text-xs text-[#8b949e] mt-0.5">Customize statistics and pre-filtering thresholds for this analysis job.</p>
+                    </div>
+                  </div>
+                  {thresholdSaved && (
+                    <span className="text-xs text-[#22c55e] font-semibold bg-[#22c55e]/10 border border-[#22c55e]/30 px-3 py-1 rounded-full flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e]" />
+                      Parameters Saved
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+                  {/* FDR (padj) Slider */}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-semibold text-gray-300">FDR Threshold (adj. p-value)</span>
+                      <span className="text-sm font-bold text-[#3b82f6] bg-[#3b82f6]/10 px-2 py-0.5 rounded font-mono">
+                        {degThresholds.fdr_threshold.toFixed(3)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.001"
+                      max="0.100"
+                      step="0.001"
+                      value={degThresholds.fdr_threshold}
+                      onChange={(e) =>
+                        setDegThresholds({
+                          ...degThresholds,
+                          fdr_threshold: parseFloat(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#3b82f6] bg-gray-700 h-1.5 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <span className="text-[10px] text-[#8b949e]">
+                      False Discovery Rate significance cutoff for multi-hypothesis test correction (Benjamini-Hochberg). Recommended: 0.05.
+                    </span>
+                  </div>
+
+                  {/* Log2 Fold-Change (log2FC) Slider */}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-semibold text-gray-300">Log2 Fold-Change (|log2FC|)</span>
+                      <span className="text-sm font-bold text-[#3b82f6] bg-[#3b82f6]/10 px-2 py-0.5 rounded font-mono">
+                        {degThresholds.lfc_threshold.toFixed(1)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.0"
+                      max="3.0"
+                      step="0.1"
+                      value={degThresholds.lfc_threshold}
+                      onChange={(e) =>
+                        setDegThresholds({
+                          ...degThresholds,
+                          lfc_threshold: parseFloat(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#3b82f6] bg-gray-700 h-1.5 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <span className="text-[10px] text-[#8b949e]">
+                      Minimum absolute fold change required between Control vs Treatment groups. Recommended: 1.0.
+                    </span>
+                  </div>
+
+                  {/* min_cpm Slider */}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-semibold text-gray-300">Minimum Expression (CPM)</span>
+                      <span className="text-sm font-bold text-[#3b82f6] bg-[#3b82f6]/10 px-2 py-0.5 rounded font-mono">
+                        {degThresholds.min_cpm.toFixed(1)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.0"
+                      max="2.0"
+                      step="0.1"
+                      value={degThresholds.min_cpm}
+                      onChange={(e) =>
+                        setDegThresholds({
+                          ...degThresholds,
+                          min_cpm: parseFloat(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#3b82f6] bg-gray-700 h-1.5 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <span className="text-[10px] text-[#8b949e]">
+                      Pre-filtering expression cutoff in Counts Per Million. Removes low-expression genes to restore statistical power. Recommended: 0.5.
+                    </span>
+                  </div>
+
+                  {/* min_sample_frac Slider */}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-semibold text-gray-300">Min Sample Fraction</span>
+                      <span className="text-sm font-bold text-[#3b82f6] bg-[#3b82f6]/10 px-2 py-0.5 rounded font-mono">
+                        {degThresholds.min_sample_frac.toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.00"
+                      max="1.00"
+                      step="0.05"
+                      value={degThresholds.min_sample_frac}
+                      onChange={(e) =>
+                        setDegThresholds({
+                          ...degThresholds,
+                          min_sample_frac: parseFloat(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#3b82f6] bg-gray-700 h-1.5 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <span className="text-[10px] text-[#8b949e]">
+                      Minimum fraction of samples that must express the gene above CPM threshold. Recommended: 0.20.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between border-t border-[#30363d] pt-4 mt-2">
+                  <div className="flex items-center gap-2 text-[11px] text-[#8b949e]">
+                    <span className="material-symbols-outlined text-sm text-[#eab308]">warning</span>
+                    <span>Modifying settings will reset current results and execute the full analysis pipeline again.</span>
+                  </div>
+                  <button
+                    onClick={handleApplyThresholds}
+                    disabled={savingThresholds}
+                    className="bg-[#3b82f6] hover:bg-[#2563eb] disabled:bg-[#1d4ed8]/50 text-white font-semibold px-6 py-2.5 rounded-lg transition-all flex items-center gap-2 shadow-lg shadow-[#3b82f6]/20 hover:shadow-[#3b82f6]/40 cursor-pointer text-xs"
+                  >
+                    {savingThresholds ? (
+                      <>
+                        <span className="material-symbols-outlined text-base animate-spin">sync</span>
+                        Applying...
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-base">play_arrow</span>
+                        Apply Thresholds & Re-run
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
             )}
 
             {results.deg_run && (

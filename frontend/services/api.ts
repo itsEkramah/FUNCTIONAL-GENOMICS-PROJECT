@@ -51,4 +51,19 @@ export const api = {
     const res = await apiClient.get<Job[]>('/jobs');
     return res.data;
   },
+
+  getThresholds: async (jobId: string): Promise<{ fdr_threshold: number; lfc_threshold: number; min_cpm: number; min_sample_frac: number }> => {
+    const res = await apiClient.get(`/jobs/${jobId}/thresholds`);
+    return res.data;
+  },
+
+  setThresholds: async (jobId: string, thresholds: { fdr_threshold: number; lfc_threshold: number; min_cpm: number; min_sample_frac: number }): Promise<{ status: string; thresholds: object }> => {
+    const res = await apiClient.post(`/jobs/${jobId}/thresholds`, thresholds);
+    return res.data;
+  },
+
+  restartJob: async (jobId: string): Promise<{ status: string; message: string }> => {
+    const res = await apiClient.post(`/jobs/${jobId}/restart`);
+    return res.data;
+  },
 };
