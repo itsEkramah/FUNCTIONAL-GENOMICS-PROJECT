@@ -9,7 +9,19 @@ The platform combines raw sequencing quality control, genome assembly, open read
 Additionally, the system utilizes Large Language Models (Gemini/GPT) to generate structured, citation-grounded pathobiology interpretations, preventing hallucinations by strictly validating claims against retrieved scientific evidence.
 
 ---
+---
 
+## 🎥 Video Demonstration
+
+A comprehensive, step-by-step walkthrough of the PathoScope AI core infrastructure, asynchronous workflow runner architecture, and interactive data analytics dashboards.
+
+[![Watch the PathoScope AI Video Demo](https://img.youtube.com/vi/fvNg29fGX2Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=fvNg29fGX2Q)
+
+*Click the dashboard preview card above to watch the dynamic software demonstration video on YouTube.*
+
+
+
+---
 ## 🚀 Key Features
 
 *   **Unified Visual Workspace**: Upload, monitor live progress steps, view interactive terminal logs, and browse results tabs (Overview, QC, ORFs, SwissProt hits, Pfam domains, NCBI Taxonomy tree, PubMed papers, and AI reports) all on a single workspace screen.
