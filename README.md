@@ -15,7 +15,7 @@ Additionally, the system utilizes Large Language Models (Gemini/GPT) to generate
 
 A comprehensive, step-by-step walkthrough of the PathoScope AI core infrastructure, asynchronous workflow runner architecture, and interactive data analytics dashboards.
 
-[![Watch the PathoScope AI Video Demo](https://img.youtube.com/vi/fvNg29fGX2Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=fvNg29fGX2Q)
+[![Watch the PathoScope AI Project Video Demo](https://img.youtube.com/vi/fvNg29fGX2Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=fvNg29fGX2Q)
 
 *Click the dashboard preview card above to watch the dynamic software demonstration video on YouTube.*
 
