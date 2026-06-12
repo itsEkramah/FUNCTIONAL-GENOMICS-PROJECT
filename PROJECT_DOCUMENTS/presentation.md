@@ -1,0 +1,226 @@
+# PathoScope AI — Master Presentation Document
+
+**An Automated, Multi-Workflow Bioinformatics Platform for Viral Genomics & Host Transcriptomics**
+
+---
+
+## 🎙️ PRESENTATION OPENING
+*   **Slide Title**: PathoScope AI: Automated Viral Functional Genomics & Host Transcriptomics
+*   **Problem Statement (The Hook)**:
+    *   Bioinformatics researchers analyze large genomic datasets (FASTA, FASTQ, and DEG expression tables) to identify pathogens and understand host responses.
+    *   **Fragmentation**: Running these analyses usually requires switching between multiple command-line interfaces (CLI) (FastQC, fastp, SPAdes, DIAMOND, HMMER) and manually formatting files.
+    *   **Scientific Uncertainty & Gaps**: Pipeline runs rarely check intermediates—they report "success" even if tools crash or generate empty files. NCBI APIs throttle queries, causing timeouts. Generative AI summaries are prone to hallucinating annotations and citations.
+*   **Objective**: Build a full-stack visual platform that automates these pipelines, streams execution logs in real-time, caches NCBI requests, and uses citation-grounded LLM prompting to prevent hallucinations.
+
+---
+
+## 👥 TEAM DIVISION & PRESENTATION ORDER
+
+Our team structured the presentation into four logical parts, matching our engineering division:
+
+```mermaid
+graph TD
+    A[Start Presentation] --> P1[Presenter 1: M. EKRAMAH<br>Core Runner, FASTQ & AI Engines]
+    P1 --> P2[Presenter 2: TAHA<br>FASTA Pathogen Annotation Pipeline]
+    P2 --> P3[Presenter 3: MISHAL<br>Transcriptomics DEG Stats Engine]
+    P3 --> P4[Presenter 4: ASAD IMAM<br>Next.js Dashboard, SSE & Reports Exporter]
+    P4 --> End[Q&A Session]
+```
+
+---
+
+## 1️⃣ PRESENTER 1: M. EKRAMAH (Core Runner, FASTQ & AI Engines)
+
+### Part A: The State Machine Orchestrator (Pipeline Runner)
+*   **Active Code Location**: [backend/pipeline/pipeline_runner.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/pipeline/pipeline_runner.py)
+*   **Logic**: Manages execution state using Pydantic schemas and database hooks. Every biological analysis step is wrapped as a `PipelineStep` with a run function (`run_func`) and an output validator (`validate_func`).
+*   **Gating**: If any step returns empty or missing files, the runner aborts downstream execution immediately to prevent corrupted completions.
+
+### Part B: The FASTQ Preprocessing & Assembly Workflow
+*   **Active Code Location**: [backend/pipeline/workflow_fastq.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/pipeline/workflow_fastq.py)
+*   **Detailed Processing Diagram (High-Contrast Black & White)**:
+
+```mermaid
+graph TD
+    RawFASTQ[Raw FASTQ Reads <br> e.g. input.fastq.gz] --> Step1[1. Input Validation]
+    Step1 --> Iterator[Biopython FastqGeneralIterator <br> line-by-line streaming]
+    Step1 --> Step2[2. Raw Reads QC]
+    Step2 --> FastQC_Raw[FastQC CLI <br> base qualities & GC distribution]
+    Step2 --> Step3[3. Quality Trimming]
+    Step3 --> fastp_CLI[fastp CLI <br> Phred >= Q20, length >= 50bp, clip adapters]
+    Step3 --> TrimmedFASTQ[trimmed.fastq]
+    TrimmedFASTQ --> Step4[4. Trimmed Reads QC]
+    Step4 --> FastQC_Trimmed[FastQC CLI <br> verify quality improvement]
+    Step4 --> Step5[5. De Novo Assembly]
+    Step5 --> SPAdes_CLI[SPAdes assembler <br> spades.py --rnaviral]
+    Step5 --> RawContigs[spades_assembly/contigs.fasta]
+    RawContigs --> Step6[6. Contig Filtering]
+    Step6 --> FilterLogic[Filter out contigs < 500bp <br> Biopython SeqIO parser]
+    Step6 --> CleanFASTA[input.fasta]
+    CleanFASTA --> Step7[7-17. Annotation Chaining <br> Workflow A Steps]
+```
+
+*   **Logic Deep-Dive**:
+    1.  **Validation**: Employs Biopython's `FastqGeneralIterator` to parse the file line-by-line. This ensures memory usage remains low even when processing files larger than $1$ GB.
+    2.  **Trimming**: Uses `fastp` to filter out reads with low quality scores ($Q < 20$, corresponding to a base-call error probability $> 1\%$) and adapter sequences:
+        `fastp -i raw.fastq -o trimmed.fastq -q 20 -l 50`
+    3.  **Assembly**: Runs SPAdes in RNA-viral mode (`spades.py --rnaviral`) to assemble the reads. The resulting contigs are filtered to retain only those $\ge 500$ bp, saving them as `input.fasta` for downstream analysis.
+
+### Part C: PubMed Mining & AI Pathobiology
+*   **Active Code Locations**: [pubmed_service.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/services/pubmed_service.py) & [ai_service.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/services/ai_service.py)
+*   **Logic**:
+    *   **PubMed wrapper**: Queries NCBI ESearch to collect PMIDs, then queries EFetch to retrieve abstracts. Uses a SQLite database caching layer to avoid rate limits (NCBI E-Utilities limits requests to 3/second).
+    *   **Grounded AI Engine**: Inserts retrieved abstracts and database annotations into a system prompt. Enforces a structured JSON schema that requires PMIDs and homologous database IDs for all claims to prevent hallucinations.
+
+---
+
+## 2️⃣ PRESENTER 2: TAHA (Workflow A: Viral FASTA Annotation)
+
+### Part A: Sequence Extraction & ORF Predicting
+*   **Active Code Locations**: [workflow_fasta.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/pipeline/workflow_fasta.py) & [orf_finder.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/core/orf_finder.py)
+*   **Logic**:
+    1.  **Header Parsing**: Extracts organism names from headers (e.g., `>NC_012532.1 Zika virus isolate complete genome` parses to `"Zika virus"`).
+    2.  **6-Frame scanning**: Scans codon-by-codon on both the forward and reverse complement strands for start (`ATG`) and stop (`TAA`, `TAG`, `TGA`) codons.
+    3.  **Overlap Resolution**: Identifies all candidate ORFs $\ge 100$ bp. If two ORFs overlap on the same strand, the shorter one is discarded:
+        `if (candidate.start <= accepted.end) and (candidate.end >= accepted.start): reject_shorter()`
+    4.  **Translation**: Translates DNA to protein residues using Biopython's translation table. Incomplete trailing codons are truncated to prevent translation errors.
+
+### Part B: Homology & Domain Architecture
+*   **Active Code Locations**: [diamond_service.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/services/diamond_service.py) & [hmmer_service.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/services/hmmer_service.py)
+*   **Logic**:
+    *   **DIAMOND homology**: Runs DIAMOND blastp alignments against the SwissProt database:
+        `diamond blastp -d swissprot -q proteins.fasta -o diamond_hits.tsv`
+        Filters alignments: E-value $\le 10^{-5}$, sequence identity $\ge 30\%$, and sequence coverage $\ge 50\%$.
+    *   **HMMER domains**: Runs HMMER `hmmscan` against Pfam-A profiles to predict structural domains. Relocates domain positions on reverse strand features back to absolute genomic coordinates:
+        $$\text{Genomic Start} = \text{Gene End} - (3 \times \text{Domain End})$$
+        $$\text{Genomic End} = \text{Gene End} - (3 \times (\text{Domain Start} - 1))$$
+
+### Part C: Annotation Workflow Diagram
+
+```mermaid
+graph TD
+    FASTA[1. Input Validation] --> QC[2. Sequence QC]
+    QC --> ORF[3. ORF Detection]
+    ORF --> Trans[4. Translation]
+    Trans --> DIAMOND[5. Homology DIAMOND]
+    Trans --> HMMER[6. Domain HMMER]
+    DIAMOND --> KEGG[7. KEGG Mapping]
+    DIAMOND --> Taxonomy[8. NCBI Taxonomy]
+    Taxonomy --> PubMed[9. PubMed Mining]
+    PubMed --> AI[10. Grounded AI Summary]
+    AI --> Exporter[11. Multi-Format Exporters]
+```
+
+---
+
+## 3️⃣ PRESENTER 3: MISHAL (Workflow C: Transcriptomics DEG Engine)
+
+### Part A: Matrix Normalization & ID Mapping
+*   **Active Code Locations**: [workflow_deg.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/pipeline/workflow_deg.py) & [deg_engine.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/core/deg_engine.py)
+*   **Logic**:
+    *   **ID Translation**: Standardizes Ensembl gene IDs to HGNC symbols.
+    *   **CPM Normalization**: Converts raw counts to Counts Per Million (CPM) to account for differences in library sizes between samples:
+        $$\text{CPM}_i = \frac{C_i}{\sum C_{\text{sample}}} \times 10^6$$
+        $$\text{Normalized Value} = \log_2(\text{CPM}_i + 1)$$
+    *   **Double-Normalization Check**: Evaluates the maximum expression value ($E_{\text{max}} < 30$). If the data is already log-transformed, the CPM step is bypassed to prevent data distortion.
+
+### Part B: Statistics (Welch's t-test & BH-FDR Correction)
+*   **Active Code Location**: [core/deg_engine.py](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/core/deg_engine.py)
+*   **Logic**:
+    1.  **Group Auto-Detection**: Uses substring pattern matchers to categorize columns into Control and Treatment cohorts.
+    2.  **Welch's T-Test**: Compares group expression levels without assuming equal variances:
+        $$t = \frac{\bar{X}_1 - \bar{X}_2}{\sqrt{\frac{s_1^2}{N_1} + \frac{s_2^2}{N_2}}}$$
+        Degrees of freedom are calculated using the Welch-Satterthwaite equation.
+    3.  **Benjamini-Hochberg FDR correction**: Adjusts p-values to control for false discoveries:
+        $$\text{FDR}_{(i)} = \min \left( \text{FDR}_{(i+1)}, \frac{m}{i} P_{(i)} \right)$$
+    4.  **GO & KEGG enrichment**: Runs Over-Representation Analysis (ORA) via GSEApy web interfaces. In case of timeout or offline runs, it falls back to a local Fisher's Exact Test database.
+
+### Part C: DEG Engine Processing Flow
+
+```mermaid
+graph TD
+    Input[1. Input Validation] --> Norm[2. Normalization & ID Mapping]
+    Norm --> Stats[3. t-Test & FDR Correction]
+    Stats --> GO[4. GO Enrichment]
+    Stats --> KEGG[5. KEGG Enrichment]
+    GO & KEGG --> PubMed[6. PubMed Mining]
+    PubMed --> AI[7. Grounded AI Summary]
+    AI --> Vis[8. Volcano / MA Plot Generation]
+    Vis --> Report[9. Report Generation]
+```
+
+---
+
+## 4️⃣ PRESENTER 4: ASAD IMAM (Frontend UI, Streaming & Reporting)
+
+### Part A: Next.js Workspace & Real-Time Log Streaming
+*   **Active Code Locations**: Frontend page components inside `app/workspace/`, `components/Terminal.tsx`, and `components/PipelineSteps.tsx`.
+*   **Logic**:
+    *   **Responsive Workspace**: Features a dropzone for uploads, a status panel showing step progression, and a results panel containing tabs for visualizations and statistics.
+    *   **SSE Logs Streaming**: Connects to the backend via Server-Sent Events (SSE). The browser listens to the `/stream` endpoint, reading the backend's pipeline logs line-by-line and printing them in real-time to the logs terminal.
+
+### Part B: Interactive Visualizations & Reports Export
+*   **Active Code Locations**: [backend/reports/](file:///g:/LAST%20FINAL%20FUNCTIONAL%20GENOICS%20PROJECT/FUNCTIONAL%20GENOMICS%20PROJECT/backend/reports/) (HTML, PDF, GFF3, CSV writers) & `components/VolcanoPlot.tsx`.
+*   **Logic**:
+    *   **Interactive Charts**: Volcano plots and dotplots are rendered in the browser using React Recharts, supporting tooltips and zoom functions.
+    *   **Static Plot Exporters**: The backend uses Matplotlib and Seaborn in non-interactive mode (`matplotlib.use('Agg')`) to generate static PNG, SVG, and PDF plots.
+    *   **Report Generation**: Generates GFF3 genome coordinate files, CSV tables, and print-ready PDFs (using ReportLab) to enable downstream analysis and sharing.
+
+### Part C: Architecture Integrations Diagram
+
+```mermaid
+graph TD
+    subgraph Frontend Client
+        TS[TypeScript / React / Next.js]
+        CSS[Tailwind CSS]
+    end
+    subgraph Backend API Services
+        PY[Python / FastAPI]
+        DB[(SQLite / PostgreSQL)]
+    end
+    subgraph Core Engines
+        BIO[Biopython / SciPy / NumPy]
+        CLI[fastp / FastQC / SPAdes / DIAMOND / HMMER]
+    end
+    TS <--> |JSON / SSE| PY
+    PY <--> |SQLAlchemy| DB
+    PY --> BIO
+    PY --> |Subprocess CLI| CLI
+```
+
+---
+
+## 5️⃣ BIOLOGICAL IMPORTANCE & SCREENSHOTS
+
+### Part A: Biological Importance of Results
+*   **FASTQ Workflow**: Preprocessing and assembly filter out biological noise and reconstruct clean pathogen consensus sequences (e.g. Influenza A, Zika). This enables study of novel pathogens and tracking of mutations directly from clinical sequencer raw files.
+*   **FASTA Workflow**: Identifies genes and active protein domain architectures (like Zika envelope or viral polymerase). KEGG signaling networks and cached taxonomy queries trace host interactions, which are compiled into citation-grounded AI pathobiology reports.
+*   **DEG Workflow**: Discovers differentially expressed host genes using Welch's t-test and BH-FDR. Over-representation analysis (GO/KEGG) highlights signaling cascades targeted by the pathogen (e.g., cell cycle disruption, Toll-like receptor signaling) to identify drug targets.
+
+### Part B: Frontend Screen Interface & Image Placeholders
+*   **Workspace Upload Dropzone**: Displays drag-and-drop workspace and type detection.
+*   **SSE Logs Streamer**: Renders logs scrolling in the terminal window.
+*   **Annotation Results**: Tabs showing SwissProt and Pfam domains.
+*   **DEG Visualizations**: Displays volcano plots and expression heatmaps.
+*   **AI pathobiology**: Renders AI summary card with supporting PubMed references.
+
+---
+
+## 6️⃣ SUMMARY & SYSTEM STATE MACHINE STATE LABELS
+
+Below is the state transitions of the Pipeline State Machine used globally across all workflows:
+
+```mermaid
+stateDiagram-v2
+    [*] --> QUEUED
+    QUEUED --> RUNNING: start_task
+    state RUNNING {
+        ExecuteStep --> CheckpointValidation
+        CheckpointValidation --> StepSuccess
+        CheckpointValidation --> StepFailed
+        StepSuccess --> ExecuteNextStep
+    }
+    StepFailed --> FAILED
+    StepSuccess --> COMPLETED
+    RUNNING --> CANCELLED: user_abort
+```

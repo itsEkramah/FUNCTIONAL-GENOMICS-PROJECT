@@ -216,4 +216,7 @@ Thumbs.db
 test_data/
 clones/
 
+# Archive
+_legacy_archive/
+
 
