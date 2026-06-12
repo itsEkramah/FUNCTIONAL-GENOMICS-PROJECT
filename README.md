@@ -200,8 +200,7 @@ python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload --reload-d
 npm run dev
 
 
-## 🎓 Academic Credit & License
+## 🎓 License
 
-PathoScope AI was designed and developed as a BS Bioinformatics Final Year Project. 
 
 Licensed under the [MIT License](LICENSE).
